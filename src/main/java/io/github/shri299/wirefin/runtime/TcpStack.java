@@ -32,7 +32,7 @@ public final class TcpStack implements AutoCloseable {
         try {
             while (running.get()) {
                 byte[] packet = device.read();
-                for (byte[] response : processor.process(packet)) device.write(response);
+                for (byte[] response : processor.process(packet)) writePacket(response);
             }
         } finally {
             running.set(false);
@@ -40,9 +40,11 @@ public final class TcpStack implements AutoCloseable {
     }
 
     private void writeUnchecked(byte[] packet) {
-        try { device.write(packet); }
+        try { writePacket(packet); }
         catch (IOException e) { throw new UncheckedIOException(e); }
     }
+
+    private synchronized void writePacket(byte[] packet) throws IOException { device.write(packet); }
 
     @Override public void close() throws IOException {
         running.set(false);

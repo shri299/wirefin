@@ -56,13 +56,9 @@ public final class TunDevice implements PacketDevice {
     }
 
     @Override public void write(byte[] packet) throws IOException {
-        int offset = 0;
-        while (offset < packet.length) {
-            byte[] remaining = offset == 0 ? packet : Arrays.copyOfRange(packet, offset, packet.length);
-            int count = libc.write(fd, remaining, remaining.length);
-            if (count <= 0) throw error("write " + name);
-            offset += count;
-        }
+        int count = libc.write(fd, packet, packet.length);
+        if (count < 0) throw error("write " + name);
+        if (count != packet.length) throw new IOException("short TUN packet write: " + count + "/" + packet.length);
     }
 
     @Override public void close() throws IOException {
