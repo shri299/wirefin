@@ -1,6 +1,6 @@
 package io.github.shri299.wirefin.tcp.congestion;
 
-/** Educational Reno-like slow start/congestion avoidance without fast recovery. */
+/** Basic RFC 5681-inspired slow start and additive-increase/multiplicative-decrease controller. */
 public final class BasicCongestionController implements CongestionController {
     private final int maximumSegmentSize;
     private long cwnd;
@@ -18,9 +18,14 @@ public final class BasicCongestionController implements CongestionController {
         else cwnd += Math.max(1, (long) maximumSegmentSize * maximumSegmentSize / cwnd);
     }
 
-    @Override public synchronized void onLoss() {
-        ssthresh = Math.max(cwnd / 2, 2L * maximumSegmentSize);
+    @Override public synchronized void onTimeout(long bytesInFlight) {
+        ssthresh = Math.max(bytesInFlight / 2, 2L * maximumSegmentSize);
         cwnd = maximumSegmentSize;
+    }
+
+    @Override public synchronized void onFastRetransmit(long bytesInFlight) {
+        ssthresh = Math.max(bytesInFlight / 2, 2L * maximumSegmentSize);
+        cwnd = ssthresh;
     }
 
     @Override public synchronized long congestionWindow() { return cwnd; }

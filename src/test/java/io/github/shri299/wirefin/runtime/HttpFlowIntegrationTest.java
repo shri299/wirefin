@@ -35,6 +35,7 @@ class HttpFlowIntegrationTest {
         TcpSegment requestAck = response(processor.process(packet(segment(2001, 1001, TcpFlags.ACK | TcpFlags.PSH, request))).getFirst());
         assertEquals(2001 + request.length, requestAck.acknowledgementNumber());
         assertArrayEquals(request, socket.read());
+        asynchronous.clear(); // discard explicit receive-window update emitted after application consumption
 
         byte[] http = "HTTP/1.1 200 OK\r\nContent-Length: 24\r\n\r\nHello from userspace TCP".getBytes(StandardCharsets.US_ASCII);
         socket.write(http);
