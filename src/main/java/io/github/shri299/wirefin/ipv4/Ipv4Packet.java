@@ -24,4 +24,19 @@ public record Ipv4Packet(int dscpEcn, int identification, int flags, int fragmen
     public int headerLength() { return 20 + options.length; }
     public int totalLength() { return headerLength() + payload.length; }
     public boolean isFragmented() { return fragmentOffset != 0 || (flags & 1) != 0; }
+
+    @Override public boolean equals(Object other) {
+        if (this == other) return true;
+        return other instanceof Ipv4Packet that && dscpEcn == that.dscpEcn &&
+                identification == that.identification && flags == that.flags &&
+                fragmentOffset == that.fragmentOffset && ttl == that.ttl && protocol == that.protocol &&
+                source.equals(that.source) && destination.equals(that.destination) &&
+                Arrays.equals(options, that.options) && Arrays.equals(payload, that.payload);
+    }
+
+    @Override public int hashCode() {
+        int result = java.util.Objects.hash(dscpEcn, identification, flags, fragmentOffset, ttl, protocol, source, destination);
+        result = 31 * result + Arrays.hashCode(options);
+        return 31 * result + Arrays.hashCode(payload);
+    }
 }
