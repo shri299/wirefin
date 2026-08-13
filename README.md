@@ -1,13 +1,18 @@
 # Wirefin
 
+[![CI](https://github.com/shri299/wirefin/actions/workflows/ci.yml/badge.svg)](https://github.com/shri299/wirefin/actions/workflows/ci.yml)
+![Java 21](https://img.shields.io/badge/Java-21-007396)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Wirefin is an observable, educational userspace IPv4/TCP stack for Linux TUN,
 written in Java 21. It parses and emits real packets, owns the TCP state and
 sequence spaces, retransmits unacknowledged segments, and serves a small HTTP/1.1
 response without `Socket`, `ServerSocket`, Netty, or the kernel TCP transport.
 
-> **Status:** experimental and deliberately narrow. The packet-level integration
-> suite verifies the complete HTTP flow in memory. Live TUN testing requires Linux;
-> see [Run on Linux](#run-on-linux).
+> **Status:** experimental and deliberately narrow. Deterministic tests verify the
+> packet and control-block paths. A separate privileged Linux job and
+> `scripts/integration-test-linux.sh` exercise real kernel TCP, TUN, curl, and
+> tcpdump; consult the CI badge rather than assuming interoperability from unit tests.
 
 ## Why userspace TCP?
 
@@ -81,32 +86,58 @@ TCP uses a wrapping 32-bit sequence space. `SequenceNumber` implements serial
 arithmetic instead of ordinary signed/unsigned comparisons. `SND.UNA`, `SND.NXT`,
 and `RCV.NXT` live in the connection control block. ACKs outside `[SND.UNA,SND.NXT]`
 are ignored; valid cumulative ACKs release all fully acknowledged transmissions.
-Duplicate ACKs are counted for observability.
+Three qualifying duplicate ACKs trigger retransmission of the oldest outstanding
+segment. This is basic fast retransmit, not full Reno/NewReno fast recovery.
 
 ### Ordered delivery and flow control
 
-In-order payload is delivered to the application queue and advances `RCV.NXT`.
-Future exact-start segments are buffered and drained when a gap closes. Old
-segments are recognized as duplicates and re-ACKed. The sender limits new data to
-both the peer's advertised receive window and the congestion window. The current
-blocking API deliberately rejects writes that cannot fit atomically rather than
-silently exposing a partial write.
+`ReceiveBuffer` normalizes each byte into a bounded ordered interval space, so
+duplicates, left/right overlaps, spanning segments, and out-of-order data cannot
+deliver a byte twice. Its advertised window is capacity minus application-readable
+and out-of-order bytes; application reads reopen the window and emit an update ACK.
+The send side queues writes and emits MSS-sized data as the peer window and `cwnd`
+permit. SYN MSS options constrain the effective send MSS.
 
 ### Retransmission and congestion control
 
 Every sequence-consuming outbound segment is retained until cumulatively ACKed.
-The initial retransmission timeout is one second and doubles on each timeout up to
-60 seconds. This first implementation does not estimate RTT. `BasicCongestionController`
-starts at one 1400-byte MSS, uses slow start then additive increase, halves the
-slow-start threshold on loss, and returns `cwnd` to one MSS. The interface keeps
-future algorithms replaceable.
+`RtoEstimator` implements RFC 6298-style `SRTT`, `RTTVAR`, bounded `RTO`, timeout
+backoff, and Karn's rule for retransmitted data. The retransmission timer follows
+the oldest outstanding segment and partial ACKs trim its payload. The basic
+RFC 5681-inspired controller implements slow start, additive increase, timeout
+collapse, and a separate fast-retransmit loss response. It deliberately does not
+claim complete Reno fast recovery.
 
 ### Connection teardown
 
 Both peer FIN and application close are represented in the explicit state machine:
 `ESTABLISHED`, `FIN_WAIT_1`, `FIN_WAIT_2`, `CLOSE_WAIT`, `CLOSING`, `LAST_ACK`, and
-`TIME_WAIT`. RST closes immediately. The current implementation enters `TIME_WAIT`
-but does not yet expire and remove that control block automatically.
+`TIME_WAIT`. RST closes immediately. A configurable timer expires `TIME_WAIT` and
+atomically removes the four-tuple; retransmitted FINs are re-ACKed and refresh it.
+
+### The TCP control block
+
+```mermaid
+flowchart LR
+    AppWrite["application write queue"] -->|"peer rwnd ∩ cwnd"| SNDNXT["SND.NXT"]
+    SNDNXT --> RTX["retransmission queue"]
+    RTX -->|"cumulative ACK"| SNDUNA["SND.UNA"]
+    RTT["SRTT / RTTVAR / RTO"] --> RTX
+    CC["cwnd / ssthresh"] --> SNDNXT
+    Wire["received sequence space"] --> Reassembly["bounded overlap-normalizing buffer"]
+    Reassembly --> RCVNXT["RCV.NXT"]
+    Reassembly --> AppRead["application byte stream"]
+    AppRead -->|"bytes consumed reopen rwnd"| Wire
+```
+
+- `SND.UNA` is the oldest unacknowledged sequence; cumulative ACKs advance it.
+- `SND.NXT` is the next sequence assigned to queued application bytes or FIN.
+- `RCV.NXT` is the next byte required for contiguous application delivery.
+- The peer receive window and local congestion window jointly gate new sends.
+- The retransmission queue retains sequence-consuming segments and timestamps;
+  the oldest entry drives RTO and three duplicate ACKs drive fast retransmit.
+- The bounded receive buffer owns advertised-window accounting. Data remains
+  charged whether it is out of order or waiting for the application to consume it.
 
 ## Project structure
 
@@ -115,7 +146,7 @@ src/main/java/io/github/shri299/wirefin/
 ├── device/       PacketDevice and Linux/JNA TunDevice
 ├── ipv4/         IPv4 model, codec, address, Internet checksum
 ├── tcp/          TCP model, flags, codec
-│   ├── congestion/   controller interface and basic Reno-like algorithm
+│   ├── congestion/   controller interface and basic RFC 5681-inspired AIMD
 │   ├── connection/   four-tuple, table, TCP control block
 │   ├── reliability/  sequence arithmetic and retransmission tracking
 │   └── state/        explicit states, events, transitions
@@ -141,7 +172,14 @@ This creates the runnable fat JAR:
 target/wirefin-0.1.0-SNAPSHOT-all.jar
 ```
 
-The tests never create a kernel TCP socket and do not require root or Linux.
+The default Maven tests never create a kernel TCP socket and do not require root
+or Linux. The separate Linux interoperability harness does.
+
+Run the real Linux kernel/TUN test (requires `sudo`, TUN, iproute2, curl, and tcpdump):
+
+```bash
+bash scripts/integration-test-linux.sh
+```
 
 ## Run on Linux
 
@@ -202,7 +240,8 @@ wireshark wirefin.pcap
 ```
 
 You should see SYN, SYN-ACK, ACK, the HTTP request/response payloads, and FIN/ACK
-teardown. If no SYN appears, verify `ip route get 10.0.0.2` selects `tun0`.
+teardown. The integration script asserts those flags in its captured pcap. If no
+SYN appears, verify `ip route get 10.0.0.2` selects `tun0`.
 
 ## Source walkthrough of a curl request
 
@@ -226,34 +265,35 @@ teardown. If no SYN appears, verify `ip route get 10.0.0.2` selects `tun0`.
 - TCP header/options parse and serialization, IPv4 pseudo-header checksum
 - Passive server handshake and RST for unopened ports
 - Wrapping sequence arithmetic and cumulative ACK validation
-- Ordered byte delivery, exact-start out-of-order buffering, duplicate detection
-- Receive-window flow control and simple send-window enforcement
-- RTO retransmission with exponential backoff
-- Reno-like slow start, congestion avoidance, and timeout loss response
-- FIN/ACK close states and RST handling
-- Blocking listener/socket abstraction and HTTP/1.1 demo
-- Debug logging and packet-level integration tests
+- Bounded ordered byte delivery with overlap normalization and duplicate suppression
+- Dynamic receive-window accounting and queued send-window enforcement
+- SYN MSS parsing/advertisement and MSS-constrained segmentation
+- RFC 6298-style SRTT/RTTVAR/RTO, Karn sampling, and exponential backoff
+- Three-duplicate-ACK fast retransmit (without complete Reno fast recovery)
+- Basic slow start, congestion avoidance, timeout, and fast-loss responses
+- FIN/ACK close states, simultaneous close, RST, and timer-driven TIME_WAIT cleanup
+- Stream-oriented blocking reads, queued writes, HTTP/1.1 demo, and debug TCB logging
+- Deterministic packet-level integration plus a real Linux TUN/curl harness
 
 ## Deliberately unsupported / incomplete
 
 - IPv6, UDP, IP fragmentation/reassembly, routing, ICMP, ARP, and raw Ethernet
 - Active TCP open/client API and simultaneous open
 - TCP timestamps, SACK, window scaling, ECN behavior, urgent data, and Nagle
-- Overlapping/partially duplicate segment normalization and receive-buffer limits
-- RTT sampling (SRTT/RTTVAR), fast retransmit/recovery, persist/keepalive timers
-- Automatic TIME_WAIT expiration, SYN cookies, listen backlog limits
-- Large blocking writes that span a closed window (current writes are atomic)
+- Full RFC 7323 option negotiation (timestamps/window scaling) and SACK
+- Full Reno/NewReno fast recovery, persist/keepalive timers, and zero-window probes
+- SYN cookies, listen backlog limits, challenge ACKs, and production hardening
+- Blocking application backpressure when the in-memory send queue itself is bounded
 - Production hardening, security review, or high-performance buffer management
 
 ## Roadmap
 
-1. Add live network-namespace tests in a Linux CI runner.
-2. Add SRTT/RTTVAR RTO calculation and Karn's algorithm.
-3. Implement bounded receive buffers, partial-overlap reassembly, and zero-window probes.
-4. Expire TIME_WAIT entries and harden simultaneous close.
-5. Add MSS negotiation, window scaling, SACK, and fast retransmit/recovery.
-6. Add active open and a userspace TCP client API.
-7. Explore buffer pools, off-heap buffers, batching, and event-loop alternatives.
+1. Add zero-window probes and bounded application send-queue backpressure.
+2. Implement window scaling, timestamps, SACK, and complete fast recovery.
+3. Add SYN backlog policy, SYN cookies, and stronger RFC 5961 reset handling.
+4. Add active open and a userspace TCP client API.
+5. Run repeated interoperability/fault-injection tests across Linux kernel versions.
+6. Explore buffer pools, off-heap buffers, batching, and event-loop alternatives.
 
 ## RFC references
 
