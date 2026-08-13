@@ -24,4 +24,15 @@ class Ipv4CodecTest {
     @Test void checksumHandlesOddLength() {
         assertEquals(0xfbfd, InternetChecksum.compute(new byte[]{1,2,3}));
     }
+
+    @Test void rejectsWrongVersionIhlAndTotalLength() {
+        byte[] valid = Ipv4Codec.serialize(new Ipv4Packet(0, 1, 0, 0, 64, 6,
+                Ipv4Address.parse("1.1.1.1"), Ipv4Address.parse("2.2.2.2"), new byte[0], new byte[0]));
+        byte[] wrongVersion = valid.clone(); wrongVersion[0] = 0x65;
+        byte[] shortIhl = valid.clone(); shortIhl[0] = 0x44;
+        byte[] badLength = valid.clone(); badLength[2] = 0; badLength[3] = 19;
+        assertThrows(Ipv4Codec.MalformedPacketException.class, () -> Ipv4Codec.parse(wrongVersion));
+        assertThrows(Ipv4Codec.MalformedPacketException.class, () -> Ipv4Codec.parse(shortIhl));
+        assertThrows(Ipv4Codec.MalformedPacketException.class, () -> Ipv4Codec.parse(badLength));
+    }
 }
