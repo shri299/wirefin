@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.LongSupplier;
 import java.util.function.Consumer;
 import java.util.logging.Logger;
@@ -26,7 +27,9 @@ public final class PacketProcessor {
     private final TcpConnectionTable connections = new TcpConnectionTable();
     private final LongSupplier isnSource;
     private final Consumer<byte[]> asynchronousOutput;
-    private int nextIpIdentification;
+    private final AtomicInteger nextIpIdentification = new AtomicInteger();
+    private final LongSupplier nanoTime;
+    private final TcpConnection.Config connectionConfig;
 
     public PacketProcessor(Ipv4Address localAddress) {
         this(localAddress, () -> ThreadLocalRandom.current().nextLong(1L << 32), ignored -> { });
@@ -37,9 +40,16 @@ public final class PacketProcessor {
     }
 
     public PacketProcessor(Ipv4Address localAddress, LongSupplier isnSource, Consumer<byte[]> asynchronousOutput) {
+        this(localAddress, isnSource, asynchronousOutput, System::nanoTime, TcpConnection.Config.defaults());
+    }
+
+    public PacketProcessor(Ipv4Address localAddress, LongSupplier isnSource, Consumer<byte[]> asynchronousOutput,
+                           LongSupplier nanoTime, TcpConnection.Config connectionConfig) {
         this.localAddress = localAddress;
         this.isnSource = isnSource;
         this.asynchronousOutput = asynchronousOutput;
+        this.nanoTime = nanoTime;
+        this.connectionConfig = connectionConfig;
     }
 
     public void listen(int port) {
@@ -70,13 +80,14 @@ public final class PacketProcessor {
         List<TcpSegment> replies = new ArrayList<>();
         if (connection == null) {
             if (listeners.containsKey(tcp.destinationPort()) && tcp.has(TcpFlags.SYN) && !tcp.has(TcpFlags.ACK)) {
-                connection = connections.add(TcpConnection.passiveOpen(key, isnSource.getAsLong(), tcp));
+                connection = connections.add(TcpConnection.passiveOpen(key, isnSource.getAsLong(), tcp,
+                        nanoTime.getAsLong(), connectionConfig));
                 replies.add(connection.synAck());
             } else if (!tcp.has(TcpFlags.RST)) {
                 replies.add(resetFor(tcp));
             }
         } else {
-            TcpConnection.ProcessingResult result = connection.receive(tcp);
+            TcpConnection.ProcessingResult result = connection.receive(tcp, nanoTime.getAsLong());
             replies.addAll(result.outbound());
             if (result.justEstablished()) listeners.getOrDefault(key.localPort(), ignored -> { }).accept(connection);
             if (result.closed()) connections.remove(key);
@@ -86,7 +97,7 @@ public final class PacketProcessor {
 
     private byte[] encode(TcpSegment segment, TcpConnectionKey key) {
         byte[] tcp = TcpCodec.serialize(segment, key.localAddress(), key.remoteAddress());
-        Ipv4Packet ip = new Ipv4Packet(0, nextIpIdentification++ & 0xffff, 2, 0, 64,
+        Ipv4Packet ip = new Ipv4Packet(0, nextIpIdentification.getAndIncrement() & 0xffff, 2, 0, 64,
                 Ipv4Packet.PROTOCOL_TCP, key.localAddress(), key.remoteAddress(), new byte[0], tcp);
         LOG.fine(() -> "TX TCP flags=" + TcpFlags.describe(segment.flags()) + " seq=" + segment.sequenceNumber() +
                 " ack=" + segment.acknowledgementNumber() + " len=" + segment.payload().length);
@@ -110,7 +121,9 @@ public final class PacketProcessor {
     }
 
     public void pollRetransmissions(long nowNanos) {
-        for (TcpConnection connection : connections.snapshot())
+        for (TcpConnection connection : connections.snapshot()) {
             transmit(connection, connection.retransmissionsDue(nowNanos));
+            if (connection.expireTimeWait(nowNanos)) connections.remove(connection.key());
+        }
     }
 }

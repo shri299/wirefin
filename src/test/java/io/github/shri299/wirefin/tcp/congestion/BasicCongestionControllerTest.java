@@ -4,12 +4,14 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class BasicCongestionControllerTest {
-    @Test void growsOnAckAndCollapsesOnLoss() {
+    @Test void distinguishesTimeoutFromFastRetransmitLoss() {
         var controller = new BasicCongestionController(1000);
         controller.onAcknowledgement(1000);
         assertEquals(2000, controller.congestionWindow());
-        controller.onLoss();
+        controller.onFastRetransmit(8000);
+        assertEquals(4000, controller.congestionWindow());
+        controller.onTimeout(8000);
         assertEquals(1000, controller.congestionWindow());
-        assertEquals(2000, controller.slowStartThreshold());
+        assertEquals(4000, controller.slowStartThreshold());
     }
 }
