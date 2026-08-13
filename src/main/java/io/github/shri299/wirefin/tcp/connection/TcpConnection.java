@@ -108,12 +108,14 @@ public final class TcpConnection {
             acknowledge(incoming, nowNanos, outbound);
             transition(TcpEvent.RECEIVE_ACK);
             establishedNow = true;
+        } else if (!sequenceAcceptable(incoming)) {
+            return result(List.of(ack()), false, false, "unacceptable receive sequence");
         } else if (incoming.has(TcpFlags.ACK)) {
             acknowledge(incoming, nowNanos, outbound);
         }
         remoteWindow = incoming.windowSize();
 
-        if (incoming.payload().length > 0) {
+        if (incoming.payload().length > 0 && canReceiveData()) {
             receiveBuffer.accept(incoming.sequenceNumber(), incoming.payload());
             outbound.add(ack());
         }
@@ -133,6 +135,23 @@ public final class TcpConnection {
         outbound.addAll(flushSend(nowNanos));
         outbound.addAll(maybeSendFin(nowNanos));
         return result(outbound, establishedNow, states.state() == TcpState.CLOSED, "segment processed");
+    }
+
+    private boolean canReceiveData() {
+        return states.state() == TcpState.ESTABLISHED || states.state() == TcpState.FIN_WAIT_1 ||
+                states.state() == TcpState.FIN_WAIT_2;
+    }
+
+    private boolean sequenceAcceptable(TcpSegment segment) {
+        int window = receiveBuffer.advertisedWindow();
+        int length = segment.payload().length + (segment.has(TcpFlags.FIN) ? 1 : 0) + (segment.has(TcpFlags.SYN) ? 1 : 0);
+        long startDistance = SequenceNumber.distance(receiveNext(), segment.sequenceNumber());
+        if (window == 0) return length == 0 && segment.sequenceNumber() == receiveNext();
+        if (length == 0) return startDistance < window;
+        long last = SequenceNumber.add(segment.sequenceNumber(), length - 1L);
+        long lastDistance = SequenceNumber.distance(receiveNext(), last);
+        return (startDistance < window) || (lastDistance < window) ||
+                (SequenceNumber.lessThan(segment.sequenceNumber(), receiveNext()) && SequenceNumber.greaterThan(last, receiveNext()));
     }
 
     private void acknowledge(TcpSegment incoming, long nowNanos, List<TcpSegment> outbound) {
@@ -228,7 +247,7 @@ public final class TcpConnection {
         return receiveBuffer.read(destination, offset, length);
     }
     public byte[] read() throws InterruptedException {
-        byte[] buffer = new byte[Math.max(1, receiveBuffer.readableBytes())];
+        byte[] buffer = new byte[Math.min(config.receiveCapacity(), 8192)];
         int count = read(buffer, 0, buffer.length);
         return count < 0 ? null : Arrays.copyOf(buffer, count);
     }
@@ -298,7 +317,7 @@ public final class TcpConnection {
         }
         public static Config defaults() {
             return new Config(DEFAULT_RECEIVE_WINDOW, DEFAULT_MSS, 536, Duration.ofSeconds(1),
-                    Duration.ofMillis(200), Duration.ofSeconds(60), Duration.ofSeconds(60));
+                    Duration.ofSeconds(1), Duration.ofSeconds(60), Duration.ofSeconds(60));
         }
     }
 

@@ -81,6 +81,54 @@ class TcpConnectionDataTest {
         assertEquals(16, connection.read(data, 0, 16));
     }
 
+    @Test void advertisedWindowClosesAndReopensAfterApplicationRead() throws Exception {
+        TcpConnection connection = established(4, 4, 1000);
+        TcpSegment acknowledgement = connection.receive(
+                segment(501, 10_001, TcpFlags.ACK, bytes("abcd")), 10).outbound().getFirst();
+        assertEquals(0, acknowledgement.windowSize());
+        assertEquals(0, connection.receiveWindow());
+
+        byte[] consumed = new byte[2];
+        assertEquals(2, connection.read(consumed, 0, consumed.length));
+        assertEquals(2, connection.ack().windowSize());
+    }
+
+    @Test void zeroWindowRejectsDataAndDoesNotProcessItsAcknowledgement() {
+        TcpConnection connection = established(4, 4, 1000);
+        connection.send(bytes("x"), 5);
+        connection.receive(segment(501, 10_001, TcpFlags.ACK, bytes("abcd")), 10);
+
+        TcpSegment response = connection.receive(
+                segment(500, 10_002, TcpFlags.ACK, bytes("abcdef")), 20).outbound().getFirst();
+        assertEquals(505, response.acknowledgementNumber());
+        assertEquals(0, response.windowSize());
+        assertEquals(1, connection.bytesInFlight());
+    }
+
+    @Test void outOfOrderFinIsAppliedWhenMissingDataArrives() throws Exception {
+        TcpConnection connection = established(32, 16, 1000);
+        connection.receive(segment(505, 10_001, TcpFlags.FIN | TcpFlags.ACK, new byte[0]), 10);
+        assertEquals(TcpState.ESTABLISHED, connection.state());
+
+        connection.receive(segment(501, 10_001, TcpFlags.ACK, bytes("abcd")), 20);
+        assertEquals(TcpState.CLOSE_WAIT, connection.state());
+        assertEquals(506, connection.receiveNext());
+        byte[] data = new byte[4];
+        assertEquals(4, connection.read(data, 0, data.length));
+        assertArrayEquals(bytes("abcd"), data);
+        assertEquals(-1, connection.read(new byte[1], 0, 1));
+    }
+
+    @Test void unacknowledgedFinIsRetainedForTimeoutRetransmission() {
+        TcpConnection connection = established(32, 16, 1000);
+        TcpSegment fin = connection.close(10).getFirst();
+        long deadline = 10 + connection.rtoNanos();
+        assertTrue(connection.retransmissionsDue(deadline - 1).isEmpty());
+        TcpSegment retransmitted = connection.retransmissionsDue(deadline).getFirst();
+        assertEquals(fin.sequenceNumber(), retransmitted.sequenceNumber());
+        assertTrue(retransmitted.has(TcpFlags.FIN));
+    }
+
     private static TcpConnection established(int capacity, Integer mss, int window) {
         byte[] options = mss == null ? new byte[0] : TcpOptions.mss(mss);
         TcpSegment syn = new TcpSegment(50000, 8080, 500, 0, TcpFlags.SYN, window, 0, options, new byte[0]);

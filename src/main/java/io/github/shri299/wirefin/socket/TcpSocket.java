@@ -2,7 +2,6 @@ package io.github.shri299.wirefin.socket;
 
 import io.github.shri299.wirefin.runtime.PacketProcessor;
 import io.github.shri299.wirefin.tcp.connection.TcpConnection;
-import java.util.Arrays;
 
 /** Blocking, stream-oriented application view backed solely by Wirefin TCP. */
 public final class TcpSocket implements AutoCloseable {
@@ -30,7 +29,7 @@ public final class TcpSocket implements AutoCloseable {
     }
 
     public void write(byte[] bytes) {
-        processor.transmit(connection, connection.send(Arrays.copyOf(bytes, bytes.length), System.nanoTime()));
+        processor.transmit(connection, connection.send(bytes, System.nanoTime()));
     }
 
     @Override public void close() {
