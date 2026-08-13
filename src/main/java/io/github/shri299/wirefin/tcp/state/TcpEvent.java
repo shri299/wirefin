@@ -1,0 +1,6 @@
+package io.github.shri299.wirefin.tcp.state;
+
+public enum TcpEvent {
+    PASSIVE_OPEN, ACTIVE_OPEN, RECEIVE_SYN, RECEIVE_SYN_ACK, RECEIVE_ACK,
+    APP_CLOSE, RECEIVE_FIN, RECEIVE_FIN_ACK, RECEIVE_ACK_OF_FIN, TIMEOUT, RESET
+}
