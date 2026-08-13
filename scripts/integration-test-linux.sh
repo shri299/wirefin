@@ -17,6 +17,7 @@ PORT="${WIREFIN_PORT:-18080}"
 RUN_DIR="$(mktemp -d)"
 STACK_PID=""
 TCPDUMP_PID=""
+FAILED_LINE=0
 
 cleanup() {
   [[ -z "$STACK_PID" ]] || kill "$STACK_PID" 2>/dev/null || true
@@ -28,7 +29,7 @@ cleanup() {
 finish() {
   local status=$?
   if (( status != 0 )); then
-    echo "Linux interoperability test failed with status $status at line ${BASH_LINENO[0]}." >&2
+    echo "Linux interoperability test failed with status $status at line $FAILED_LINE." >&2
     [[ ! -f "$RUN_DIR/wirefin.log" ]] || { echo "--- wirefin.log ---" >&2; cat "$RUN_DIR/wirefin.log" >&2; }
     [[ ! -f "$RUN_DIR/tcpdump.log" ]] || { echo "--- tcpdump.log ---" >&2; cat "$RUN_DIR/tcpdump.log" >&2; }
     echo "--- TUN state ---" >&2
@@ -42,6 +43,7 @@ finish() {
   exit "$status"
 }
 trap finish EXIT
+trap 'FAILED_LINE=$LINENO' ERR
 trap 'exit 130' INT TERM
 
 mvn --batch-mode clean package
@@ -53,6 +55,13 @@ sudo ip link set dev "$TUN_NAME" up
 sudo tcpdump -U -i "$TUN_NAME" -nn -s 0 -w "$RUN_DIR/wirefin.pcap" "tcp port $PORT" \
   >"$RUN_DIR/tcpdump.log" 2>&1 &
 TCPDUMP_PID=$!
+
+for _ in {1..50}; do
+  grep -q "listening on $TUN_NAME" "$RUN_DIR/tcpdump.log" && break
+  kill -0 "$TCPDUMP_PID" 2>/dev/null || { cat "$RUN_DIR/tcpdump.log" >&2; exit 1; }
+  sleep 0.1
+done
+grep -q "listening on $TUN_NAME" "$RUN_DIR/tcpdump.log"
 
 java -jar target/wirefin-0.1.0-SNAPSHOT-all.jar \
   --tun "$TUN_NAME" --address "$STACK_ADDRESS" --port "$PORT" --debug \
@@ -69,8 +78,8 @@ grep -q "Wirefin listening" "$RUN_DIR/wirefin.log"
 BODY="$(curl --fail --silent --show-error --http1.1 --max-time 5 "http://$STACK_ADDRESS:$PORT/")"
 [[ "$BODY" == "Hello from userspace TCP" ]] || { echo "Unexpected response: $BODY" >&2; exit 1; }
 
-sleep 0.3
-sudo kill "$TCPDUMP_PID" 2>/dev/null || true
+sleep 1
+sudo kill -INT "$TCPDUMP_PID" 2>/dev/null || true
 wait "$TCPDUMP_PID" 2>/dev/null || true
 TCPDUMP_PID=""
 TRACE="$(tcpdump -nn -r "$RUN_DIR/wirefin.pcap" 2>/dev/null)"
