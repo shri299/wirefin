@@ -3,12 +3,12 @@ package io.github.shri299.wirefin.device;
 import com.sun.jna.Library;
 import com.sun.jna.Native;
 import com.sun.jna.Structure;
-import com.sun.jna.ptr.IntByReference;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Minimal Linux TUN wrapper. Linux creates/configures the interface outside this
@@ -23,11 +23,15 @@ public final class TunDevice implements PacketDevice {
     private final LibC libc;
     private final int fd;
     private final String name;
+    private final AtomicBoolean closed = new AtomicBoolean();
 
     public TunDevice(String requestedName) throws IOException {
         if (!System.getProperty("os.name").toLowerCase().contains("linux")) {
             throw new IOException("TUN transport requires Linux");
         }
+        if (requestedName == null || requestedName.isBlank() || requestedName.length() > 15 ||
+                !StandardCharsets.US_ASCII.newEncoder().canEncode(requestedName))
+            throw new IllegalArgumentException("TUN name must be 1-15 ASCII characters");
         libc = Native.load("c", LibC.class);
         fd = libc.open("/dev/net/tun", O_RDWR);
         if (fd < 0) throw error("open /dev/net/tun");
@@ -51,7 +55,7 @@ public final class TunDevice implements PacketDevice {
     @Override public byte[] read() throws IOException {
         byte[] buffer = new byte[MTU];
         int count = libc.read(fd, buffer, buffer.length);
-        if (count < 0) throw error("read " + name);
+        if (count <= 0) throw count == 0 ? new IOException("TUN device reached EOF") : error("read " + name);
         return Arrays.copyOf(buffer, count);
     }
 
@@ -62,7 +66,7 @@ public final class TunDevice implements PacketDevice {
     }
 
     @Override public void close() throws IOException {
-        if (libc.close(fd) != 0) throw error("close " + name);
+        if (closed.compareAndSet(false, true) && libc.close(fd) != 0) throw error("close " + name);
     }
 
     private static IOException error(String operation) {

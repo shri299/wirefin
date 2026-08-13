@@ -27,6 +27,7 @@ public final class RetransmissionManager {
     public synchronized AckResult acknowledge(long acknowledgement, long nowNanos) {
         int bytes = 0;
         Long sample = null;
+        boolean acknowledgedRetransmission = false;
         var iterator = outstanding.entrySet().iterator();
         while (iterator.hasNext()) {
             Map.Entry<Long, Outstanding> entry = iterator.next();
@@ -36,19 +37,21 @@ public final class RetransmissionManager {
             if (SequenceNumber.lessThanOrEqual(end, acknowledgement)) {
                 bytes += item.segment.sequenceSpaceLength();
                 if (!item.retransmitted) sample = nowNanos - item.sentAtNanos;
+                else acknowledgedRetransmission = true;
                 iterator.remove();
             } else if (SequenceNumber.greaterThan(acknowledgement, start)) {
                 int consumed = (int) SequenceNumber.distance(start, acknowledgement);
                 bytes += consumed;
                 Outstanding trimmed = item.trim(consumed, acknowledgement);
                 iterator.remove();
-                outstanding.put(acknowledgement, trimmed);
+                replaceKeyPreservingOrder(entry.getKey(), acknowledgement, trimmed);
                 break;
             } else break;
         }
-        if (sample != null) estimator.sample(sample);
+        boolean sampled = sample != null && !acknowledgedRetransmission;
+        if (sampled) estimator.sample(sample);
         rearmOldest(nowNanos);
-        return new AckResult(bytes, sample != null, estimator.rtoNanos());
+        return new AckResult(bytes, sampled, estimator.rtoNanos());
     }
 
     public synchronized List<TcpSegment> due(long nowNanos) {
@@ -75,6 +78,20 @@ public final class RetransmissionManager {
     private void replaceOldest(Outstanding replacement) {
         Long key = outstanding.isEmpty() ? null : outstanding.keySet().iterator().next();
         if (key != null) outstanding.put(key, replacement);
+    }
+    private void replaceKeyPreservingOrder(Long oldKey, long newKey, Outstanding replacement) {
+        LinkedHashMap<Long, Outstanding> rebuilt = new LinkedHashMap<>();
+        boolean inserted = false;
+        for (Map.Entry<Long, Outstanding> entry : outstanding.entrySet()) {
+            if (!inserted && SequenceNumber.greaterThan(entry.getKey(), oldKey)) {
+                rebuilt.put(newKey, replacement);
+                inserted = true;
+            }
+            rebuilt.put(entry.getKey(), entry.getValue());
+        }
+        if (!inserted) rebuilt.put(newKey, replacement);
+        outstanding.clear();
+        outstanding.putAll(rebuilt);
     }
 
     public synchronized long bytesInFlight() { return outstanding.values().stream().mapToLong(v -> v.segment.sequenceSpaceLength()).sum(); }

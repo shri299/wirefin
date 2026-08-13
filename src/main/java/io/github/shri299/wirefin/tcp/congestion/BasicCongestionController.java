@@ -15,7 +15,7 @@ public final class BasicCongestionController implements CongestionController {
     @Override public synchronized void onAcknowledgement(int bytes) {
         if (bytes <= 0) return;
         if (cwnd < ssthresh) cwnd += Math.min(bytes, maximumSegmentSize);
-        else cwnd += Math.max(1, (long) maximumSegmentSize * maximumSegmentSize / cwnd);
+        else cwnd += Math.max(1, (long) maximumSegmentSize * Math.min(bytes, maximumSegmentSize) / cwnd);
     }
 
     @Override public synchronized void onTimeout(long bytesInFlight) {

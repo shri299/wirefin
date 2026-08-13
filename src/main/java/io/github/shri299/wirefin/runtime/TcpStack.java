@@ -10,9 +10,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /** Drives raw packets between a PacketDevice and the pure protocol processor. */
 public final class TcpStack implements AutoCloseable {
+    private static final Logger LOG = Logger.getLogger(TcpStack.class.getName());
     private final PacketDevice device;
     private final PacketProcessor processor;
     private final ScheduledExecutorService timers = Executors.newSingleThreadScheduledExecutor();
@@ -28,10 +31,15 @@ public final class TcpStack implements AutoCloseable {
 
     public void run() throws IOException {
         if (!running.compareAndSet(false, true)) throw new IllegalStateException("stack already running");
-        timers.scheduleAtFixedRate(() -> processor.pollRetransmissions(System.nanoTime()), 100, 100, TimeUnit.MILLISECONDS);
+        timers.scheduleAtFixedRate(() -> {
+            try { processor.pollRetransmissions(System.nanoTime()); }
+            catch (RuntimeException failure) { LOG.log(Level.SEVERE, "TCP timer processing failed", failure); }
+        }, 100, 100, TimeUnit.MILLISECONDS);
         try {
             while (running.get()) {
-                byte[] packet = device.read();
+                byte[] packet;
+                try { packet = device.read(); }
+                catch (IOException closed) { if (!running.get()) break; else throw closed; }
                 for (byte[] response : processor.process(packet)) writePacket(response);
             }
         } finally {
@@ -50,5 +58,7 @@ public final class TcpStack implements AutoCloseable {
         running.set(false);
         timers.shutdownNow();
         device.close();
+        try { timers.awaitTermination(2, TimeUnit.SECONDS); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); }
     }
 }
