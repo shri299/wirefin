@@ -12,33 +12,44 @@ import io.github.shri299.wirefin.tcp.connection.TcpConnectionTable;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.LongSupplier;
+import java.util.function.Consumer;
 import java.util.logging.Logger;
 
 /** Pure packet-in/packet-out protocol core; it has no dependency on TUN or kernel sockets. */
 public final class PacketProcessor {
     private static final Logger LOG = Logger.getLogger(PacketProcessor.class.getName());
     private final Ipv4Address localAddress;
-    private final Set<Integer> listeners = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<Integer, Consumer<TcpConnection>> listeners = new ConcurrentHashMap<>();
     private final TcpConnectionTable connections = new TcpConnectionTable();
     private final LongSupplier isnSource;
+    private final Consumer<byte[]> asynchronousOutput;
     private int nextIpIdentification;
 
     public PacketProcessor(Ipv4Address localAddress) {
-        this(localAddress, () -> ThreadLocalRandom.current().nextLong(1L << 32));
+        this(localAddress, () -> ThreadLocalRandom.current().nextLong(1L << 32), ignored -> { });
     }
 
     public PacketProcessor(Ipv4Address localAddress, LongSupplier isnSource) {
+        this(localAddress, isnSource, ignored -> { });
+    }
+
+    public PacketProcessor(Ipv4Address localAddress, LongSupplier isnSource, Consumer<byte[]> asynchronousOutput) {
         this.localAddress = localAddress;
         this.isnSource = isnSource;
+        this.asynchronousOutput = asynchronousOutput;
     }
 
     public void listen(int port) {
         if (port < 1 || port > 65535) throw new IllegalArgumentException("invalid listen port");
-        if (!listeners.add(port)) throw new IllegalStateException("port already listening: " + port);
+        listen(port, ignored -> { });
+    }
+
+    public void listen(int port, Consumer<TcpConnection> onEstablished) {
+        if (port < 1 || port > 65535) throw new IllegalArgumentException("invalid listen port");
+        if (listeners.putIfAbsent(port, onEstablished) != null) throw new IllegalStateException("port already listening: " + port);
     }
 
     public List<byte[]> process(byte[] rawPacket) {
@@ -58,7 +69,7 @@ public final class PacketProcessor {
         TcpConnection connection = connections.find(key).orElse(null);
         List<TcpSegment> replies = new ArrayList<>();
         if (connection == null) {
-            if (listeners.contains(tcp.destinationPort()) && tcp.has(TcpFlags.SYN) && !tcp.has(TcpFlags.ACK)) {
+            if (listeners.containsKey(tcp.destinationPort()) && tcp.has(TcpFlags.SYN) && !tcp.has(TcpFlags.ACK)) {
                 connection = connections.add(TcpConnection.passiveOpen(key, isnSource.getAsLong(), tcp));
                 replies.add(connection.synAck());
             } else if (!tcp.has(TcpFlags.RST)) {
@@ -67,6 +78,7 @@ public final class PacketProcessor {
         } else {
             TcpConnection.ProcessingResult result = connection.receive(tcp);
             replies.addAll(result.outbound());
+            if (result.justEstablished()) listeners.getOrDefault(key.localPort(), ignored -> { }).accept(connection);
             if (result.closed()) connections.remove(key);
         }
         return replies.stream().map(reply -> encode(reply, key)).toList();
@@ -92,4 +104,13 @@ public final class PacketProcessor {
     }
 
     public TcpConnectionTable connections() { return connections; }
+
+    public void transmit(TcpConnection connection, List<TcpSegment> segments) {
+        for (TcpSegment segment : segments) asynchronousOutput.accept(encode(segment, connection.key()));
+    }
+
+    public void pollRetransmissions(long nowNanos) {
+        for (TcpConnection connection : connections.snapshot())
+            transmit(connection, connection.retransmissionsDue(nowNanos));
+    }
 }
