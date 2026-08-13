@@ -24,7 +24,25 @@ cleanup() {
   sudo ip tuntap del dev "$TUN_NAME" mode tun 2>/dev/null || true
   rm -rf "$RUN_DIR"
 }
-trap cleanup EXIT INT TERM
+
+finish() {
+  local status=$?
+  if (( status != 0 )); then
+    echo "Linux interoperability test failed with status $status at line ${BASH_LINENO[0]}." >&2
+    [[ ! -f "$RUN_DIR/wirefin.log" ]] || { echo "--- wirefin.log ---" >&2; cat "$RUN_DIR/wirefin.log" >&2; }
+    [[ ! -f "$RUN_DIR/tcpdump.log" ]] || { echo "--- tcpdump.log ---" >&2; cat "$RUN_DIR/tcpdump.log" >&2; }
+    echo "--- TUN state ---" >&2
+    ip address show dev "$TUN_NAME" >&2 || true
+    if [[ -f "$RUN_DIR/wirefin.pcap" ]]; then
+      echo "--- packet trace ---" >&2
+      sudo tcpdump -nn -r "$RUN_DIR/wirefin.pcap" >&2 || true
+    fi
+  fi
+  cleanup
+  exit "$status"
+}
+trap finish EXIT
+trap 'exit 130' INT TERM
 
 mvn --batch-mode clean package
 sudo modprobe tun 2>/dev/null || true
