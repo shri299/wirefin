@@ -2,9 +2,11 @@ package io.github.shri299.wirefin.examples;
 
 import io.github.shri299.wirefin.device.TunDevice;
 import io.github.shri299.wirefin.ipv4.Ipv4Address;
+import io.github.shri299.wirefin.ipv6.Ipv6Address;
 import io.github.shri299.wirefin.runtime.TcpStack;
 import io.github.shri299.wirefin.socket.TcpListener;
 import io.github.shri299.wirefin.socket.TcpSocket;
+import io.github.shri299.wirefin.socket.UdpSocket;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -19,17 +21,28 @@ public final class HttpServer {
     public static void main(String[] args) throws Exception {
         String deviceName = option(args, "--tun", "tun0");
         Ipv4Address address = Ipv4Address.parse(option(args, "--address", "10.0.0.2"));
+        String address6Text = option(args, "--address6", null);
         int port = Integer.parseInt(option(args, "--port", "8080"));
+        int udpPort = Integer.parseInt(option(args, "--udp-port", Integer.toString(port)));
         if (has(args, "--debug")) enableDebugLogging();
 
         TunDevice device = new TunDevice(deviceName);
-        try (TcpStack stack = new TcpStack(device, address)) {
+        var addresses = new java.util.ArrayList<io.github.shri299.wirefin.ip.IpAddress>(); addresses.add(address);
+        if (address6Text != null) addresses.add(Ipv6Address.parse(address6Text));
+        try (TcpStack stack = new TcpStack(device, addresses); UdpSocket udp = stack.bindUdp(udpPort)) {
             TcpListener listener = stack.listen(port);
             Thread.ofVirtual().name("wirefin-packet-loop").start(() -> {
                 try { stack.run(); }
                 catch (Exception e) { throw new RuntimeException(e); }
             });
-            System.out.printf("Wirefin listening on http://%s:%d via %s%n", address, port, device.name());
+            Thread.ofVirtual().name("wirefin-udp-echo").start(() -> {
+                while (true) try {
+                    var datagram = udp.receive(java.time.Duration.ofDays(1));
+                    udp.sendTo(datagram.sourceAddress(), datagram.sourcePort(), datagram.payload());
+                } catch (Exception stopped) { return; }
+            });
+            System.out.printf("Wirefin listening on TCP %s:%d and UDP echo port %d%s via %s%n", address, port,
+                    udpPort, address6Text == null ? "" : " (IPv6 " + address6Text + ")", device.name());
             while (true) {
                 TcpSocket socket = listener.accept();
                 Thread.ofVirtual().name("wirefin-http").start(() -> serve(socket));

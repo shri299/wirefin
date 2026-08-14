@@ -1,7 +1,9 @@
 package io.github.shri299.wirefin.examples;
 
 import io.github.shri299.wirefin.device.TunDevice;
+import io.github.shri299.wirefin.ip.IpAddress;
 import io.github.shri299.wirefin.ipv4.Ipv4Address;
+import io.github.shri299.wirefin.ipv6.Ipv6Address;
 import io.github.shri299.wirefin.runtime.TcpStack;
 
 import java.io.ByteArrayOutputStream;
@@ -14,10 +16,10 @@ public final class HttpClient {
 
     public static void main(String[] args) throws Exception {
         String deviceName = option(args, "--tun", "tun0");
-        Ipv4Address localAddress = Ipv4Address.parse(option(args, "--address", "10.0.0.2"));
-        Ipv4Address remoteAddress = Ipv4Address.parse(option(args, "--remote", "10.0.0.1"));
+        IpAddress localAddress = parseAddress(option(args, "--address", "10.0.0.2"));
+        IpAddress remoteAddress = parseAddress(option(args, "--remote", "10.0.0.1"));
         int port = Integer.parseInt(option(args, "--port", "8080"));
-        try (TcpStack stack = new TcpStack(new TunDevice(deviceName), localAddress)) {
+        try (TcpStack stack = new TcpStack(new TunDevice(deviceName), java.util.List.of(localAddress))) {
             Thread packetLoop = Thread.ofVirtual().name("wirefin-client-packet-loop").start(() -> {
                 try { stack.run(); }
                 catch (Exception failure) { throw new RuntimeException(failure); }
@@ -36,6 +38,8 @@ public final class HttpClient {
             }
         }
     }
+
+    private static IpAddress parseAddress(String text) { return text.contains(":") ? Ipv6Address.parse(text) : Ipv4Address.parse(text); }
 
     private static String option(String[] args, String name, String fallback) {
         for (int i = 0; i + 1 < args.length; i++) if (args[i].equals(name)) return args[i + 1];
