@@ -3,6 +3,7 @@ package io.github.shri299.wirefin.runtime;
 import io.github.shri299.wirefin.device.PacketDevice;
 import io.github.shri299.wirefin.ipv4.Ipv4Address;
 import io.github.shri299.wirefin.socket.TcpListener;
+import io.github.shri299.wirefin.socket.TcpSocket;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -28,6 +29,17 @@ public final class TcpStack implements AutoCloseable {
     }
 
     public TcpListener listen(int port) { return new TcpListener(processor, port); }
+    public TcpListener listen(int port, int backlog, boolean synCookies) {
+        return new TcpListener(processor, port, backlog, synCookies);
+    }
+
+    /** Active-open client API. The packet loop must already be running. */
+    public TcpSocket connect(Ipv4Address remoteAddress, int remotePort, java.time.Duration timeout)
+            throws InterruptedException {
+        var connection = processor.connect(remoteAddress, remotePort);
+        connection.awaitEstablished(timeout);
+        return new TcpSocket(connection, processor);
+    }
 
     public void run() throws IOException {
         if (!running.compareAndSet(false, true)) throw new IllegalStateException("stack already running");
