@@ -116,7 +116,11 @@ public final class PacketProcessor {
         } else {
             TcpConnection.ProcessingResult result = connection.receive(tcp, nanoTime.getAsLong());
             replies.addAll(result.outbound());
-            if (result.justEstablished() && listener != null) listener.promote(key, connection);
+            if (result.justEstablished() && listener != null && !listener.promote(key, connection)) {
+                connections.remove(key);
+                replies.clear();
+                replies.add(resetFor(tcp));
+            }
             if (result.closed()) { connections.remove(key); if (listener != null) listener.remove(key); }
         }
         TcpConnectionKey responseKey = key;
@@ -172,7 +176,10 @@ public final class PacketProcessor {
             }
         }
     }
-    public void accepted(int port) { ListenerState listener = listeners.get(port); if (listener != null) listener.accepted(); }
+    public void accepted(TcpConnectionKey key) {
+        ListenerState listener = listeners.get(key.localPort());
+        if (listener != null) listener.accepted(key);
+    }
     public int halfOpenCount(int port) { ListenerState listener = listeners.get(port); return listener == null ? 0 : listener.halfOpenCount(); }
     public int establishedBacklogCount(int port) { ListenerState listener = listeners.get(port); return listener == null ? 0 : listener.establishedCount(); }
 
@@ -181,24 +188,26 @@ public final class PacketProcessor {
         private final boolean synCookies;
         private final Consumer<TcpConnection> callback;
         private final Set<TcpConnectionKey> halfOpen = new HashSet<>();
-        private int established;
+        private final Set<TcpConnectionKey> established = new HashSet<>();
         private ListenerState(int backlog, boolean synCookies, Consumer<TcpConnection> callback) {
             this.backlog = backlog; this.synCookies = synCookies; this.callback = callback;
         }
         synchronized boolean reserveHalfOpen(TcpConnectionKey key) {
-            if (halfOpen.size() + established >= backlog) return false;
+            if (halfOpen.size() >= backlog) return false;
             return halfOpen.add(key);
         }
-        synchronized void promote(TcpConnectionKey key, TcpConnection connection) {
-            halfOpen.remove(key); established++; callback.accept(connection);
+        synchronized boolean promote(TcpConnectionKey key, TcpConnection connection) {
+            halfOpen.remove(key);
+            if (established.size() >= backlog) return false;
+            established.add(key); callback.accept(connection); return true;
         }
         synchronized boolean promoteCookie(TcpConnection connection) {
-            if (established >= backlog) return false;
-            established++; callback.accept(connection); return true;
+            if (established.size() >= backlog) return false;
+            established.add(connection.key()); callback.accept(connection); return true;
         }
-        synchronized void accepted() { if (established > 0) established--; }
-        synchronized void remove(TcpConnectionKey key) { halfOpen.remove(key); }
+        synchronized void accepted(TcpConnectionKey key) { established.remove(key); }
+        synchronized void remove(TcpConnectionKey key) { halfOpen.remove(key); established.remove(key); }
         synchronized int halfOpenCount() { return halfOpen.size(); }
-        synchronized int establishedCount() { return established; }
+        synchronized int establishedCount() { return established.size(); }
     }
 }

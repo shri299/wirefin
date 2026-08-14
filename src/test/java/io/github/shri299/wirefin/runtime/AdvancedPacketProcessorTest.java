@@ -67,8 +67,12 @@ class AdvancedPacketProcessorTest {
         assertEquals(0, processor.halfOpenCount(8080));
         assertEquals(1, processor.establishedBacklogCount(8080));
         assertEquals(1, accepted.size());
-        assertTrue(processor.process(packet(syn(50_001, 200), CLIENT, SERVER)).isEmpty());
-        processor.accepted(8080);
+        assertEquals(1, processor.process(packet(syn(50_001, 200), CLIENT, SERVER)).size());
+        assertEquals(1, processor.halfOpenCount(8080));
+        assertTrue(decode(processor.process(packet(ack(50_001, 201, 1001), CLIENT, SERVER)).getFirst(),
+                SERVER, CLIENT).has(TcpFlags.RST));
+        assertEquals(1, processor.establishedBacklogCount(8080));
+        processor.accepted(accepted.getFirst().key());
         assertEquals(1, processor.process(packet(syn(50_001, 200), CLIENT, SERVER)).size());
     }
 

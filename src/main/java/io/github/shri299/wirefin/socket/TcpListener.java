@@ -15,15 +15,12 @@ public final class TcpListener {
 
     public TcpListener(PacketProcessor processor, int port, int backlog, boolean synCookies) {
         this.processor = processor;
-        this.port = port;
         processor.listen(port, backlog, synCookies, accepted::offer);
     }
 
-    private final int port;
-
     public TcpSocket accept() throws InterruptedException {
         TcpConnection connection = accepted.take();
-        processor.accepted(port);
+        processor.accepted(connection.key());
         return new TcpSocket(connection, processor);
     }
 }
