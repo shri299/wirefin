@@ -1,9 +1,11 @@
 package io.github.shri299.wirefin.runtime;
 
 import io.github.shri299.wirefin.device.PacketDevice;
+import io.github.shri299.wirefin.ip.IpAddress;
 import io.github.shri299.wirefin.ipv4.Ipv4Address;
 import io.github.shri299.wirefin.socket.TcpListener;
 import io.github.shri299.wirefin.socket.TcpSocket;
+import io.github.shri299.wirefin.socket.UdpSocket;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -23,9 +25,14 @@ public final class TcpStack implements AutoCloseable {
     private final AtomicBoolean running = new AtomicBoolean();
 
     public TcpStack(PacketDevice device, Ipv4Address localAddress) {
+        this(device, java.util.List.of(localAddress));
+    }
+
+    public TcpStack(PacketDevice device, java.util.Collection<? extends IpAddress> localAddresses) {
         this.device = device;
-        this.processor = new PacketProcessor(localAddress,
-                () -> java.util.concurrent.ThreadLocalRandom.current().nextLong(1L << 32), this::writeUnchecked);
+        this.processor = new PacketProcessor(localAddresses,
+                () -> java.util.concurrent.ThreadLocalRandom.current().nextLong(1L << 32), this::writeUnchecked,
+                System::nanoTime, io.github.shri299.wirefin.tcp.connection.TcpConnection.Config.defaults());
     }
 
     public TcpListener listen(int port) { return new TcpListener(processor, port); }
@@ -34,7 +41,7 @@ public final class TcpStack implements AutoCloseable {
     }
 
     /** Active-open client API. The packet loop must already be running. */
-    public TcpSocket connect(Ipv4Address remoteAddress, int remotePort, java.time.Duration timeout)
+    public TcpSocket connect(IpAddress remoteAddress, int remotePort, java.time.Duration timeout)
             throws InterruptedException {
         var connection = processor.connect(remoteAddress, remotePort);
         try {
@@ -45,6 +52,8 @@ public final class TcpStack implements AutoCloseable {
             throw failure;
         }
     }
+
+    public UdpSocket bindUdp(int port) { return new UdpSocket(processor, port); }
 
     public void run() throws IOException {
         if (!running.compareAndSet(false, true)) throw new IllegalStateException("stack already running");
