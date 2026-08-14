@@ -298,7 +298,7 @@ public final class TcpConnection {
         List<TcpSegment> result = new ArrayList<>();
         while (pendingSend.length > 0) {
             long allowance = Math.min(remoteWindow - bytesInFlight(), congestion.congestionWindow() - bytesInFlight());
-            if (allowance <= 0) { if (remoteWindow == 0) armPersist(nowNanos); break; }
+            if (allowance <= 0) { if (remoteWindow == 0 && bytesInFlight() == 0) armPersist(nowNanos); break; }
             int length = (int) Math.min(Math.min(sendMss, allowance), pendingSend.length);
             byte[] payload = Arrays.copyOf(pendingSend, length);
             pendingSend = Arrays.copyOfRange(pendingSend, length, pendingSend.length);
@@ -313,7 +313,7 @@ public final class TcpConnection {
         if (persistDeadline == Long.MAX_VALUE) persistDeadline = nowNanos + persistIntervalNanos;
     }
     private TcpSegment persistProbe(long nowNanos) {
-        if (remoteWindow != 0 || pendingSend.length == 0 || nowNanos < persistDeadline) return null;
+        if (remoteWindow != 0 || bytesInFlight() != 0 || pendingSend.length == 0 || nowNanos < persistDeadline) return null;
         TcpSegment probe = segment(sendNext, receiveNext(), TcpFlags.ACK, establishedOptions(),
                 new byte[] {pendingSend[0]});
         persistIntervalNanos = Math.min(config.persistMaximum().toNanos(), persistIntervalNanos * 2);
