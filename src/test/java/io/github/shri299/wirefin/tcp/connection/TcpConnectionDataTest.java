@@ -34,8 +34,8 @@ class TcpConnectionDataTest {
     @Test void thirdDuplicateAckFastRetransmitsOldestSegment() {
         TcpConnection connection = established(1024, 100, 1000);
         TcpSegment sent = connection.send(bytes("lost"), 10).getFirst();
-        for (int i = 1; i < 3; i++) assertTrue(connection.receive(segment(501, 10_001, TcpFlags.ACK, new byte[0]), 20 + i).outbound().isEmpty());
-        assertEquals(sent.sequenceNumber(), connection.receive(segment(501, 10_001, TcpFlags.ACK, new byte[0]), 23)
+        for (int i = 1; i < 3; i++) assertTrue(connection.receive(segment(501, 10_001, TcpFlags.ACK, new byte[0], 1000), 20 + i).outbound().isEmpty());
+        assertEquals(sent.sequenceNumber(), connection.receive(segment(501, 10_001, TcpFlags.ACK, new byte[0], 1000), 23)
                 .outbound().getFirst().sequenceNumber());
     }
 
