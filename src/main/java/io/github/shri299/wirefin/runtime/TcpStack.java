@@ -37,8 +37,13 @@ public final class TcpStack implements AutoCloseable {
     public TcpSocket connect(Ipv4Address remoteAddress, int remotePort, java.time.Duration timeout)
             throws InterruptedException {
         var connection = processor.connect(remoteAddress, remotePort);
-        connection.awaitEstablished(timeout);
-        return new TcpSocket(connection, processor);
+        try {
+            connection.awaitEstablished(timeout);
+            return new TcpSocket(connection, processor);
+        } catch (InterruptedException | RuntimeException failure) {
+            processor.cancel(connection);
+            throw failure;
+        }
     }
 
     public void run() throws IOException {

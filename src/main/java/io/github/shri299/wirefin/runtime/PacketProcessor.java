@@ -163,6 +163,7 @@ public final class PacketProcessor {
     }
 
     public TcpConnectionTable connections() { return connections; }
+    public void cancel(TcpConnection connection) { connections.remove(connection.key()); }
     public void transmit(TcpConnection connection, List<TcpSegment> segments) {
         for (TcpSegment segment : segments) asynchronousOutput.accept(encode(segment, connection.key()));
     }

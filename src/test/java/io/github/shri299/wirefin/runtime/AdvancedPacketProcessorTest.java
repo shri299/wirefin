@@ -54,6 +54,16 @@ class AdvancedPacketProcessorTest {
         assertEquals(0, processor.connections().size());
     }
 
+    @Test void activeOpenTimeoutClosesControlBlock() {
+        List<byte[]> output = new ArrayList<>();
+        PacketProcessor processor = new PacketProcessor(CLIENT, () -> 1000, output::add, () -> 0, config());
+        TcpConnection connection = processor.connect(SERVER, 8080);
+        assertThrows(IllegalStateException.class, () -> connection.awaitEstablished(Duration.ZERO));
+        assertEquals(TcpState.CLOSED, connection.state());
+        processor.cancel(connection);
+        assertEquals(0, processor.connections().size());
+    }
+
     @Test void backlogSeparatesHalfOpenAndUnacceptedConnections() {
         List<TcpConnection> accepted = new ArrayList<>();
         PacketProcessor processor = new PacketProcessor(SERVER, () -> 1000);

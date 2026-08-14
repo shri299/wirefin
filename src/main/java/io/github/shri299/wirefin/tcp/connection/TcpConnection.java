@@ -427,7 +427,7 @@ public final class TcpConnection {
         long deadline = System.nanoTime() + timeout.toNanos();
         while (states.state() == TcpState.SYN_SENT) {
             long remaining = deadline - System.nanoTime();
-            if (remaining <= 0) throw new IllegalStateException("TCP connect timed out");
+            if (remaining <= 0) { reset(); throw new IllegalStateException("TCP connect timed out"); }
             wait(Math.max(1, remaining / 1_000_000L), (int) (remaining % 1_000_000L));
         }
         if (states.state() != TcpState.ESTABLISHED) throw new IllegalStateException("TCP connect failed: " + states.state());
