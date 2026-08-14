@@ -1,17 +1,20 @@
 package io.github.shri299.wirefin.tcp.reliability;
 
 import io.github.shri299.wirefin.tcp.TcpFlags;
+import io.github.shri299.wirefin.tcp.TcpOptions;
 import io.github.shri299.wirefin.tcp.TcpSegment;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.ArrayList;
 
 /** Oldest-first retransmission queue with RFC 6298 RTT/RTO estimation and Karn sampling. */
 public final class RetransmissionManager {
     private final RtoEstimator estimator;
     private final LinkedHashMap<Long, Outstanding> outstanding = new LinkedHashMap<>();
+    private final List<TcpOptions.SackBlock> scoreboard = new ArrayList<>();
 
     public RetransmissionManager(Duration initialTimeout) {
         this(new RtoEstimator(initialTimeout, Duration.ofMillis(200), Duration.ofSeconds(60)));
@@ -49,6 +52,7 @@ public final class RetransmissionManager {
             } else break;
         }
         boolean sampled = sample != null && !acknowledgedRetransmission;
+        scoreboard.removeIf(block -> SequenceNumber.lessThanOrEqual(block.rightEdge(), acknowledgement));
         if (sampled) estimator.sample(sample);
         rearmOldest(nowNanos);
         return new AckResult(bytes, sampled, estimator.rtoNanos());
@@ -63,10 +67,27 @@ public final class RetransmissionManager {
     }
 
     public synchronized TcpSegment fastRetransmit(long nowNanos) {
-        Outstanding oldest = oldest();
-        if (oldest == null) return null;
-        replaceOldest(oldest.retransmitted(nowNanos, estimator.rtoNanos()));
-        return oldest.segment;
+        for (Map.Entry<Long, Outstanding> entry : outstanding.entrySet()) {
+            Outstanding candidate = entry.getValue();
+            if (isSacked(candidate.segment)) continue;
+            outstanding.put(entry.getKey(), candidate.retransmitted(nowNanos, estimator.rtoNanos()));
+            return candidate.segment;
+        }
+        return null;
+    }
+
+    public synchronized void updateSack(List<TcpOptions.SackBlock> blocks) {
+        for (TcpOptions.SackBlock block : blocks) {
+            if (block.leftEdge() == block.rightEdge()) continue;
+            if (scoreboard.stream().noneMatch(existing -> existing.equals(block))) scoreboard.add(block);
+        }
+    }
+
+    private boolean isSacked(TcpSegment segment) {
+        long end = SequenceNumber.add(segment.sequenceNumber(), segment.sequenceSpaceLength());
+        return scoreboard.stream().anyMatch(block ->
+                SequenceNumber.lessThanOrEqual(block.leftEdge(), segment.sequenceNumber()) &&
+                        !SequenceNumber.lessThan(block.rightEdge(), end));
     }
 
     private void rearmOldest(long nowNanos) {
@@ -97,6 +118,7 @@ public final class RetransmissionManager {
     public synchronized long bytesInFlight() { return outstanding.values().stream().mapToLong(v -> v.segment.sequenceSpaceLength()).sum(); }
     public synchronized int size() { return outstanding.size(); }
     public synchronized long rtoNanos() { return estimator.rtoNanos(); }
+    public synchronized int sackBlockCount() { return scoreboard.size(); }
 
     public record AckResult(int newlyAcknowledgedBytes, boolean sampledRtt, long rtoNanos) {}
 
