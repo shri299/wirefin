@@ -8,7 +8,7 @@ public final class TcpSocket implements AutoCloseable {
     private final TcpConnection connection;
     private final PacketProcessor processor;
 
-    TcpSocket(TcpConnection connection, PacketProcessor processor) {
+    public TcpSocket(TcpConnection connection, PacketProcessor processor) {
         this.connection = connection;
         this.processor = processor;
     }

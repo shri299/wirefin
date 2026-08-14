@@ -10,9 +10,17 @@ public final class TcpListener {
     private final PacketProcessor processor;
 
     public TcpListener(PacketProcessor processor, int port) {
-        this.processor = processor;
-        processor.listen(port, accepted::offer);
+        this(processor, port, 128, false);
     }
 
-    public TcpSocket accept() throws InterruptedException { return new TcpSocket(accepted.take(), processor); }
+    public TcpListener(PacketProcessor processor, int port, int backlog, boolean synCookies) {
+        this.processor = processor;
+        processor.listen(port, backlog, synCookies, accepted::offer);
+    }
+
+    public TcpSocket accept() throws InterruptedException {
+        TcpConnection connection = accepted.take();
+        processor.accepted(connection.key());
+        return new TcpSocket(connection, processor);
+    }
 }

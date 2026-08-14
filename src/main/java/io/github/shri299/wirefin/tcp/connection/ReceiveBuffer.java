@@ -1,6 +1,9 @@
 package io.github.shri299.wirefin.tcp.connection;
 
+import io.github.shri299.wirefin.tcp.TcpOptions;
 import io.github.shri299.wirefin.tcp.reliability.SequenceNumber;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -15,7 +18,8 @@ final class ReceiveBuffer {
     private boolean eof;
 
     ReceiveBuffer(long receiveNext, int capacity) {
-        if (capacity < 1 || capacity > 65_535) throw new IllegalArgumentException("receive capacity outside TCP window range");
+        if (capacity < 1 || capacity > 16 * 1024 * 1024)
+            throw new IllegalArgumentException("receive capacity outside Wirefin bounds");
         this.receiveNext = receiveNext;
         this.capacity = capacity;
         this.readable = new byte[capacity];
@@ -69,9 +73,32 @@ final class ReceiveBuffer {
 
     synchronized void markEof() { eof = true; notifyAll(); }
     synchronized void advanceControlSequence() { receiveNext = SequenceNumber.add(receiveNext, 1); }
+    synchronized void resetReceiveNext(long value) {
+        if (totalBuffered() != 0) throw new IllegalStateException("cannot reset a populated receive buffer");
+        receiveNext = value;
+    }
     synchronized long receiveNext() { return receiveNext; }
     synchronized int advertisedWindow() { return capacity - totalBuffered(); }
     synchronized int readableBytes() { return readableBytes; }
     synchronized int outOfOrderBytes() { return pending.size(); }
+    synchronized List<TcpOptions.SackBlock> sackBlocks() {
+        List<TcpOptions.SackBlock> result = new ArrayList<>();
+        Integer start = null, previous = null;
+        for (Integer offset : pending.keySet()) {
+            if (start == null) { start = previous = offset; continue; }
+            if (offset != previous + 1) {
+                result.add(new TcpOptions.SackBlock(SequenceNumber.add(receiveNext, start),
+                        SequenceNumber.add(receiveNext, previous + 1L)));
+                start = offset;
+            }
+            previous = offset;
+        }
+        if (start != null) result.add(new TcpOptions.SackBlock(SequenceNumber.add(receiveNext, start),
+                SequenceNumber.add(receiveNext, previous + 1L)));
+        result.sort((left, right) -> Long.compareUnsigned(
+                SequenceNumber.distance(receiveNext, right.leftEdge()),
+                SequenceNumber.distance(receiveNext, left.leftEdge())));
+        return result.size() <= 4 ? List.copyOf(result) : List.copyOf(result.subList(0, 4));
+    }
     private int totalBuffered() { return readableBytes + pending.size(); }
 }

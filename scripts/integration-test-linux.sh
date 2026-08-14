@@ -6,7 +6,7 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   exit 77
 fi
 
-for command in java mvn curl ip tcpdump; do
+for command in java mvn curl ip tcpdump python3; do
   command -v "$command" >/dev/null || { echo "Missing required command: $command" >&2; exit 2; }
 done
 
@@ -14,14 +14,17 @@ TUN_NAME="${WIREFIN_TUN:-wf-tun0}"
 HOST_ADDRESS="${WIREFIN_HOST_ADDRESS:-10.77.0.1}"
 STACK_ADDRESS="${WIREFIN_STACK_ADDRESS:-10.77.0.2}"
 PORT="${WIREFIN_PORT:-18080}"
+CLIENT_PORT="${WIREFIN_CLIENT_PORT:-18081}"
 RUN_DIR="$(mktemp -d)"
 STACK_PID=""
 TCPDUMP_PID=""
+KERNEL_SERVER_PID=""
 FAILED_LINE=0
 
 cleanup() {
   [[ -z "$STACK_PID" ]] || kill "$STACK_PID" 2>/dev/null || true
   [[ -z "$TCPDUMP_PID" ]] || sudo kill "$TCPDUMP_PID" 2>/dev/null || true
+  [[ -z "$KERNEL_SERVER_PID" ]] || kill "$KERNEL_SERVER_PID" 2>/dev/null || true
   sudo ip tuntap del dev "$TUN_NAME" mode tun 2>/dev/null || true
   rm -rf "$RUN_DIR"
 }
@@ -31,6 +34,8 @@ finish() {
   if (( status != 0 )); then
     echo "Linux interoperability test failed with status $status at line $FAILED_LINE." >&2
     [[ ! -f "$RUN_DIR/wirefin.log" ]] || { echo "--- wirefin.log ---" >&2; cat "$RUN_DIR/wirefin.log" >&2; }
+    [[ ! -f "$RUN_DIR/client.log" ]] || { echo "--- client.log ---" >&2; cat "$RUN_DIR/client.log" >&2; }
+    [[ ! -f "$RUN_DIR/kernel-server.log" ]] || { echo "--- kernel-server.log ---" >&2; cat "$RUN_DIR/kernel-server.log" >&2; }
     [[ ! -f "$RUN_DIR/tcpdump.log" ]] || { echo "--- tcpdump.log ---" >&2; cat "$RUN_DIR/tcpdump.log" >&2; }
     echo "--- TUN state ---" >&2
     ip address show dev "$TUN_NAME" >&2 || true
@@ -52,7 +57,8 @@ sudo ip tuntap add dev "$TUN_NAME" mode tun user "$USER"
 sudo ip address add "$HOST_ADDRESS/30" dev "$TUN_NAME"
 sudo ip link set dev "$TUN_NAME" up
 
-sudo tcpdump -U -i "$TUN_NAME" -nn -s 0 -w "$RUN_DIR/wirefin.pcap" "tcp port $PORT" \
+sudo tcpdump -U -i "$TUN_NAME" -nn -s 0 -w "$RUN_DIR/wirefin.pcap" \
+  "tcp port $PORT or tcp port $CLIENT_PORT" \
   >"$RUN_DIR/tcpdump.log" 2>&1 &
 TCPDUMP_PID=$!
 
@@ -78,6 +84,26 @@ grep -q "Wirefin listening" "$RUN_DIR/wirefin.log"
 BODY="$(curl --fail --silent --show-error --http1.1 --max-time 5 "http://$STACK_ADDRESS:$PORT/")"
 [[ "$BODY" == "Hello from userspace TCP" ]] || { echo "Unexpected response: $BODY" >&2; exit 1; }
 
+kill "$STACK_PID"
+wait "$STACK_PID" 2>/dev/null || true
+STACK_PID=""
+
+mkdir -p "$RUN_DIR/www"
+printf 'Hello from a kernel TCP server' >"$RUN_DIR/www/wirefin.txt"
+python3 -m http.server "$CLIENT_PORT" --bind "$HOST_ADDRESS" --directory "$RUN_DIR/www" \
+  >"$RUN_DIR/kernel-server.log" 2>&1 &
+KERNEL_SERVER_PID=$!
+sleep 0.2
+kill -0 "$KERNEL_SERVER_PID"
+
+java -cp target/wirefin-0.1.0-SNAPSHOT-all.jar io.github.shri299.wirefin.examples.HttpClient \
+  --tun "$TUN_NAME" --address "$STACK_ADDRESS" --remote "$HOST_ADDRESS" --port "$CLIENT_PORT" \
+  >"$RUN_DIR/client.log" 2>&1
+grep -q "Hello from a kernel TCP server" "$RUN_DIR/client.log"
+kill "$KERNEL_SERVER_PID"
+wait "$KERNEL_SERVER_PID" 2>/dev/null || true
+KERNEL_SERVER_PID=""
+
 sleep 1
 sudo kill -INT "$TCPDUMP_PID" 2>/dev/null || true
 wait "$TCPDUMP_PID" 2>/dev/null || true
@@ -86,6 +112,8 @@ TRACE="$(tcpdump -nn -r "$RUN_DIR/wirefin.pcap" 2>/dev/null)"
 grep -q 'Flags \[S\]' <<<"$TRACE"
 grep -q 'Flags \[S\.\]' <<<"$TRACE"
 grep -q 'Flags \[F\.\]' <<<"$TRACE"
+[[ "$(grep -c 'Flags \[S\]' <<<"$TRACE")" -ge 2 ]]
+grep -q "$CLIENT_PORT" <<<"$TRACE"
 
-echo "Linux kernel TCP ↔ Wirefin interoperability passed."
+echo "Linux kernel TCP ↔ Wirefin passive and active interoperability passed."
 echo "$TRACE"
