@@ -50,4 +50,21 @@ class DualStackPacketProcessorTest {
         TcpSegment synAck = TcpCodec.parse(response.payload(), local6, remote6);
         assertTrue(synAck.has(TcpFlags.SYN)); assertTrue(synAck.has(TcpFlags.ACK)); assertEquals(11, synAck.acknowledgementNumber());
     }
+    @Test void sendsActiveOpenAndReassemblesUdpOverIpv4() {
+        var output = new ArrayList<byte[]>();
+        var p = new PacketProcessor(List.of(local4, local6), () -> 100, output::add, () -> 1,
+                TcpConnection.Config.defaults());
+        p.connect(remote6, 8080);
+        Ipv6Packet synPacket = Ipv6Codec.parse(output.removeFirst());
+        assertTrue(TcpCodec.parse(synPacket.payload(), local6, remote6).has(TcpFlags.SYN));
+
+        var received = new AtomicReference<UdpReceivedDatagram>(); p.bindUdp(9000, received::set);
+        byte[] udp = UdpCodec.serialize(new UdpDatagram(8000, 9000, "fragmented".getBytes()), remote4, local4);
+        byte[] tail = Arrays.copyOfRange(udp, 8, udp.length), head = Arrays.copyOfRange(udp, 0, 8);
+        var second = new Ipv4Packet(0, 77, 0, 1, 64, 17, remote4, local4, new byte[0], tail);
+        var first = new Ipv4Packet(0, 77, 1, 0, 64, 17, remote4, local4, new byte[0], head);
+        assertTrue(p.process(Ipv4Codec.serialize(second)).isEmpty());
+        assertTrue(p.process(Ipv4Codec.serialize(first)).isEmpty());
+        assertArrayEquals("fragmented".getBytes(), received.get().payload());
+    }
 }

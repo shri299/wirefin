@@ -24,7 +24,10 @@ public final class Ipv4FragmentReassembler {
         for (Part part : assembly.parts) if (start < part.end && end > part.start) { remove(key, assembly); return Optional.empty(); }
         byte[] payload = fragment.payload(); assembly.parts.add(new Part(start, end, payload));
         assembly.updated = now; retainedBytes += payload.length;
-        if ((fragment.flags() & 1) == 0) assembly.total = end;
+        if ((fragment.flags() & 1) == 0) {
+            if (assembly.total >= 0 && assembly.total != end) { remove(key, assembly); return Optional.empty(); }
+            assembly.total = end;
+        }
         enforceBounds();
         if (!assemblies.containsKey(key) || assembly.total < 0) return Optional.empty();
         assembly.parts.sort(Comparator.comparingInt(p -> p.start));

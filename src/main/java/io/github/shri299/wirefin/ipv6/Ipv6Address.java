@@ -13,6 +13,8 @@ public final class Ipv6Address implements IpAddress {
         this.bytes = Arrays.copyOf(bytes, 16);
     }
     public static Ipv6Address parse(String text) {
+        if (text == null || !text.contains(":") || text.contains("%"))
+            throw new IllegalArgumentException("invalid IPv6 address: " + text);
         try {
             InetAddress parsed = InetAddress.getByName(text);
             if (!(parsed instanceof Inet6Address)) throw new IllegalArgumentException("not an IPv6 address: " + text);
