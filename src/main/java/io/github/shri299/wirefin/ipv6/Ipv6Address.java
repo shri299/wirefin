@@ -23,6 +23,7 @@ public final class Ipv6Address implements IpAddress {
     }
     @Override public byte[] bytes() { return Arrays.copyOf(bytes, 16); }
     @Override public int bitLength() { return 128; }
+    @Override public int unsignedByte(int index) { return Byte.toUnsignedInt(bytes[index]); }
     @Override public boolean equals(Object other) { return other instanceof Ipv6Address that && Arrays.equals(bytes, that.bytes); }
     @Override public int hashCode() { return Arrays.hashCode(bytes); }
     @Override public String toString() {

@@ -21,10 +21,11 @@ public final class UdpCodec {
         return new UdpDatagram(sourcePort, destinationPort, Arrays.copyOfRange(exact, 8, length));
     }
     public static byte[] serialize(UdpDatagram datagram, IpAddress source, IpAddress destination) {
-        int length = 8 + datagram.payload().length;
+        int length = 8 + datagram.payloadLength();
         ByteBuffer out = ByteBuffer.allocate(length).order(ByteOrder.BIG_ENDIAN);
         out.putShort((short) datagram.sourcePort()).putShort((short) datagram.destinationPort())
-                .putShort((short) length).putShort((short) 0).put(datagram.payload());
+                .putShort((short) length).putShort((short) 0);
+        datagram.writePayloadTo(out);
         int checksum = TransportChecksum.compute(out.array(), source, destination, 17);
         out.putShort(6, (short) (checksum == 0 ? 0xffff : checksum));
         return out.array();

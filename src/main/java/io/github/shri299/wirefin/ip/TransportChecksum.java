@@ -1,8 +1,6 @@
 package io.github.shri299.wirefin.ip;
 
 import io.github.shri299.wirefin.ipv4.InternetChecksum;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 
 /** IPv4/IPv6 pseudo-header checksum used by TCP, UDP, and ICMPv6. */
 public final class TransportChecksum {
@@ -10,18 +8,20 @@ public final class TransportChecksum {
 
     public static int compute(byte[] payload, IpAddress source, IpAddress destination, int protocol) {
         if (source.bitLength() != destination.bitLength()) throw new IllegalArgumentException("mixed IP families");
-        ByteBuffer pseudo;
+        long sum = addressSum(source) + addressSum(destination);
         if (source.bitLength() == 32) {
             if (payload.length > 0xffff) throw new IllegalArgumentException("transport payload too long");
-            pseudo = ByteBuffer.allocate(12 + payload.length).order(ByteOrder.BIG_ENDIAN);
-            pseudo.put(source.bytes()).put(destination.bytes()).put((byte) 0).put((byte) protocol)
-                    .putShort((short) payload.length);
+            sum += protocol + payload.length;
         } else {
-            pseudo = ByteBuffer.allocate(40 + payload.length).order(ByteOrder.BIG_ENDIAN);
-            pseudo.put(source.bytes()).put(destination.bytes()).putInt(payload.length)
-                    .put(new byte[3]).put((byte) protocol);
+            sum += (payload.length >>> 16) + (payload.length & 0xffff) + protocol;
         }
-        pseudo.put(payload);
-        return InternetChecksum.compute(pseudo.array());
+        return InternetChecksum.compute(payload, 0, payload.length, sum);
+    }
+
+    private static long addressSum(IpAddress address) {
+        long sum = 0;
+        for (int i = 0; i < address.bitLength() / 8; i += 2)
+            sum += address.unsignedByte(i) << 8 | address.unsignedByte(i + 1);
+        return sum;
     }
 }

@@ -1,6 +1,7 @@
 package io.github.shri299.wirefin.ipv4;
 
 import java.util.Arrays;
+import java.nio.ByteBuffer;
 
 public record Ipv4Packet(int dscpEcn, int identification, int flags, int fragmentOffset,
                          int ttl, int protocol, Ipv4Address source, Ipv4Address destination,
@@ -25,6 +26,8 @@ public record Ipv4Packet(int dscpEcn, int identification, int flags, int fragmen
     @Override public byte[] payload() { return Arrays.copyOf(payload, payload.length); }
     public int headerLength() { return 20 + options.length; }
     public int totalLength() { return headerLength() + payload.length; }
+    void writeOptionsTo(ByteBuffer destination) { destination.put(options); }
+    void writePayloadTo(ByteBuffer destination) { destination.put(payload); }
     public boolean isFragmented() { return fragmentOffset != 0 || (flags & 1) != 0; }
 
     @Override public boolean equals(Object other) {

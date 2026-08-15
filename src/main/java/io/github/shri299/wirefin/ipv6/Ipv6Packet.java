@@ -1,6 +1,7 @@
 package io.github.shri299.wirefin.ipv6;
 
 import java.util.Arrays;
+import java.nio.ByteBuffer;
 
 /** IPv6 fixed header plus upper-layer payload; extension headers are intentionally unsupported. */
 public record Ipv6Packet(int trafficClass, int flowLabel, int nextHeader, int hopLimit,
@@ -15,6 +16,8 @@ public record Ipv6Packet(int trafficClass, int flowLabel, int nextHeader, int ho
         payload = Arrays.copyOf(payload, payload.length);
     }
     @Override public byte[] payload() { return Arrays.copyOf(payload, payload.length); }
+    int payloadLength() { return payload.length; }
+    void writePayloadTo(ByteBuffer destination) { destination.put(payload); }
     @Override public boolean equals(Object other) { return other instanceof Ipv6Packet that && trafficClass == that.trafficClass &&
             flowLabel == that.flowLabel && nextHeader == that.nextHeader && hopLimit == that.hopLimit &&
             source.equals(that.source) && destination.equals(that.destination) && Arrays.equals(payload, that.payload); }

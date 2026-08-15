@@ -4,4 +4,5 @@ package io.github.shri299.wirefin.ip;
 public interface IpAddress {
     byte[] bytes();
     int bitLength();
+    int unsignedByte(int index);
 }
