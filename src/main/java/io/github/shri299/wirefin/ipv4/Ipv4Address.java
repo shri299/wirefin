@@ -1,8 +1,9 @@
 package io.github.shri299.wirefin.ipv4;
 
+import io.github.shri299.wirefin.ip.IpAddress;
 import java.util.Objects;
 
-public record Ipv4Address(int value) {
+public record Ipv4Address(int value) implements IpAddress {
     public static Ipv4Address parse(String text) {
         Objects.requireNonNull(text);
         String[] parts = text.split("\\.", -1);
@@ -21,6 +22,8 @@ public record Ipv4Address(int value) {
     public byte[] bytes() {
         return new byte[] {(byte)(value >>> 24), (byte)(value >>> 16), (byte)(value >>> 8), (byte)value};
     }
+
+    @Override public int bitLength() { return 32; }
 
     @Override public String toString() {
         return (value >>> 24 & 0xff) + "." + (value >>> 16 & 0xff) + "." +

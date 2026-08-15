@@ -4,10 +4,11 @@
 ![Java 21](https://img.shields.io/badge/Java-21-007396)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Wirefin is an observable, educational userspace IPv4/TCP stack for Linux TUN,
-written in Java 21. It parses and emits real packets, owns the TCP state and
-sequence spaces, retransmits unacknowledged segments, and serves a small HTTP/1.1
-response without `Socket`, `ServerSocket`, Netty, or the kernel TCP transport.
+Wirefin is an observable, educational userspace IPv4/IPv6 stack for Linux TUN,
+written in Java 21. IPv4, IPv6, TCP, UDP, ICMPv4, and ICMPv6 packets are parsed
+and emitted by repository code without `Socket`, `DatagramSocket`, Netty, or the
+kernel transport stack. The included HTTP and UDP echo services interoperate with
+normal Linux clients over a layer-3 TUN interface.
 
 > **Status:** experimental and deliberately narrow. Deterministic tests verify the
 > packet and control-block paths. A separate privileged Linux job and
@@ -37,31 +38,62 @@ logic remains Java code in this repository.
 
 ```mermaid
 flowchart TD
-    Curl["curl / application"] --> API["TcpListener / TcpSocket / active connect"]
-    API --> Conn["TCP control block + state machine"]
-    Conn --> TCP["TCP parse, checksum, serialize"]
-    TCP --> IP["IPv4 parse, checksum, serialize"]
-    IP --> TUN["Linux TUN device"]
+    Apps["application"] --> API["NetworkStack: TCP streams / UDP datagrams"]
+    API --> Transport["TCP control blocks | UDP | ICMP"]
+    Transport --> Dispatch["IP protocol dispatcher"]
+    Dispatch --> V4["IPv4 codec + bounded fragment reassembly"]
+    Dispatch --> V6["IPv6 fixed-header codec"]
+    V4 --> Route["longest-prefix route abstraction"]
+    V6 --> Route
+    Route --> TUN["Linux TUN device"]
     TUN --> Linux["Linux routing / network"]
 ```
 
 The core `PacketProcessor` is a pure packet-in/packet-out component. It does not
 know about TUN, root privileges, or kernel sockets, which makes real protocol
-paths deterministic in tests. `TcpStack` is the small runtime that connects it to
-a `PacketDevice` and a scheduled retransmission poller.
+paths deterministic in tests. `NetworkStack` is the public dual-stack facade;
+`TcpStack` remains as a compatibility runtime for existing users.
+
+## Protocol support matrix
+
+| Layer | IPv4 | IPv6 | Notes |
+|---|---:|---:|---|
+| Fixed IP header parse/emit | yes | yes | IPv4 options retained; IPv6 extension headers are not implemented |
+| Fragmentation | receive reassembly | no | bounded by datagram count, retained bytes, and timeout; overlaps drop the assembly |
+| Routing abstraction | yes | yes | family-safe longest-prefix match; one TUN output is used by the example runtime |
+| ICMP echo | echo reply | echo reply | Linux `ping` and `ping -6` are exercised in CI |
+| ICMP destination unreachable | UDP port unreachable | UDP port unreachable | includes the invoking packet quote |
+| UDP | yes | yes | datagram boundaries/source retained; IPv6 checksum is mandatory |
+| TCP passive open | yes | yes | shared state/recovery logic and family-specific pseudo-header checksums |
+| TCP active open | yes | yes | deterministic tests cover generic addressing; Linux active-open currently uses IPv4 |
+| Neighbor discovery / ARP | n/a | not needed | TUN is layer 3; the direct-route harness has no Ethernet neighbors |
+| IPv6 extension headers, PMTU, forwarding | no | no | explicitly out of scope |
+
+## IPv4 and IPv6 boundaries
+
+`IpAddress` is the only shared network-address abstraction. `Ipv4Codec` and
+`Ipv6Codec` remain separate: IPv4 validates header checksum/IHL/total length and
+feeds fragments through `Ipv4FragmentReassembler`; IPv6 validates its 40-byte
+fixed header and payload length. `TransportChecksum` builds the correct family
+pseudo-header for TCP, UDP, and ICMPv6.
+
+UDP uses `UdpSocket.sendTo()` and `receive()` and preserves datagram boundaries.
+TCP uses `TcpListener`/`TcpSocket` and preserves stream semantics. `NetworkStack`
+exposes both coherently through `listenTcp`, `connectTcp`, and `bindUdp`.
 
 ## Packet lifecycle
 
-1. `TunDevice.read()` returns one raw IPv4 packet.
-2. `Ipv4Codec` validates version, IHL, total length, checksum, and extracts the
-   payload. Non-TCP, fragmented, wrong-destination, and malformed packets are dropped.
-3. `TcpCodec` validates the data offset and pseudo-header checksum and returns a
-   `TcpSegment`.
-4. `PacketProcessor` looks up the local/remote four-tuple. A SYN for a listening
+1. `TunDevice.read()` returns one raw IPv4 or IPv6 packet.
+2. The version nibble selects the family codec; IPv4 fragments pass through the
+   bounded reassembler before upper-layer dispatch.
+3. `IpProtocolDispatcher` routes TCP, UDP, ICMPv4, or ICMPv6 by protocol number.
+4. For TCP, `PacketProcessor` looks up the local/remote four-tuple. A SYN for a listening
    port creates a `TcpConnection`; an unopened port receives RST.
-5. The connection state machine processes sequence/ACK/window/data/FIN state and
+5. UDP is delivered to a bound datagram queue or produces port-unreachable ICMP;
+   echo requests produce checksum-correct echo replies.
+6. The TCP state machine processes sequence/ACK/window/data/FIN state and
    produces zero or more response segments.
-6. TCP and IPv4 codecs serialize each response and `TcpStack` writes it to TUN.
+7. The matching family codec serializes each response and the runtime writes it to TUN.
 
 ## TCP behavior
 
@@ -177,15 +209,20 @@ flowchart LR
 ```text
 src/main/java/io/github/shri299/wirefin/
 ├── device/       PacketDevice and Linux/JNA TunDevice
-├── ipv4/         IPv4 model, codec, address, Internet checksum
+├── ip/           shared address/checksum boundary and protocol dispatcher
+├── ipv4/         IPv4 model, codec, checksum, fragment reassembly
+├── ipv6/         IPv6 address, fixed-header model and codec
+├── udp/          UDP model, parse/checksum/serialize
+├── icmp/         ICMPv4 and ICMPv6 message codec
+├── routing/      family-safe longest-prefix route table
 ├── tcp/          TCP model, flags, codec
 │   ├── congestion/   controller interface and basic RFC 5681-inspired AIMD
 │   ├── connection/   four-tuple, table, TCP control block
 │   ├── reliability/  sequence arithmetic and retransmission tracking
 │   └── state/        explicit states, events, transitions
-├── socket/       TcpListener and TcpSocket application API
-├── runtime/      packet processor and TUN event loop
-└── examples/     HTTP/1.1 server and active-open client
+├── socket/       TCP stream and UDP datagram application APIs
+├── runtime/      protocol processor, NetworkStack facade, TUN event loop
+└── examples/     dual-stack HTTP/UDP echo server and active-open client
 ```
 
 Tests mirror the main packages. `HttpFlowIntegrationTest` simulates the entire
@@ -205,11 +242,12 @@ This creates the runnable fat JAR:
 target/wirefin-0.1.0-SNAPSHOT-all.jar
 ```
 
-The default Maven tests never create a kernel TCP socket and do not require root
-or Linux. The separate Linux interoperability harness tests both curl against the
-Wirefin server and the Wirefin client against a normal Linux TCP server.
+The default Maven tests do not require root or Linux. The separate Linux harness
+tests IPv4/IPv6 ping, IPv4/IPv6 UDP echo, dual-stack curl against Wirefin TCP, and
+the Wirefin IPv4 client against a normal Linux TCP server, with a packet capture.
 
-Run the real Linux kernel/TUN test (requires `sudo`, TUN, iproute2, curl, and tcpdump):
+Run the real Linux kernel/TUN test (requires `sudo`, TUN, iproute2, ping, curl,
+Python, and tcpdump):
 
 ```bash
 bash scripts/integration-test-linux.sh
@@ -229,6 +267,7 @@ Create a persistent interface owned by the current user, give the Linux/curl sid
 ```bash
 sudo ip tuntap add dev tun0 mode tun user "$USER"
 sudo ip address add 10.0.0.1/24 dev tun0
+sudo ip -6 address add fd00:77::1/64 dev tun0
 sudo ip link set dev tun0 up
 ip route get 10.0.0.2
 ```
@@ -237,13 +276,17 @@ Start Wirefin (no `sudo` is needed because the interface belongs to the user):
 
 ```bash
 java -jar target/wirefin-0.1.0-SNAPSHOT-all.jar \
-  --tun tun0 --address 10.0.0.2 --port 8080 --debug
+  --tun tun0 --address 10.0.0.2 --address6 fd00:77::2 \
+  --port 8080 --udp-port 8080 --debug
 ```
 
 In another terminal:
 
 ```bash
 curl --http1.1 --max-time 5 http://10.0.0.2:8080/
+curl --http1.1 --max-time 5 --noproxy '*' 'http://[fd00:77::2]:8080/'
+ping -c 1 10.0.0.2
+ping -6 -c 1 fd00:77::2
 ```
 
 Expected body:
@@ -306,7 +349,7 @@ SYN appears, verify `ip route get 10.0.0.2` selects `tun0`.
 
 | Area | Status | Exact scope |
 |---|---|---|
-| IPv4/TCP wire format | Implemented | Parse/serialize, checksums, four-tuple demultiplexing; no IP fragments |
+| IPv4/IPv6 TCP wire format | Implemented | Parse/serialize, family pseudo-header checksums, four-tuple demultiplexing |
 | Open | Implemented | Passive open and active `connect`, SYN retransmission/refusal, ephemeral ports |
 | Listener protection | Implemented subset | Bounded backlog and optional stateless cookies with reduced option fidelity |
 | Byte stream | Implemented | Bounded overlap normalization, ordered reads, queued MSS-sized writes |
@@ -317,11 +360,12 @@ SYN appears, verify `ip route get 10.0.0.2` selects `tun0`.
 | SACK sender | Partial | Scoreboard and unsacked retransmit selection; not RFC 6675 recovery |
 | Reset defense | Implemented subset | Exact-sequence acceptance and challenge ACK for other in-window RSTs |
 | Close | Implemented | Active/passive/simultaneous close, FIN retransmit, timer-driven TIME_WAIT |
-| Interoperability | Tested | Kernel curl → Wirefin server and Wirefin client → kernel server over Linux TUN |
+| Interoperability | Tested | Kernel dual-stack curl → Wirefin and Wirefin IPv4 client → kernel server over Linux TUN |
 
 ## Deliberately unsupported / incomplete
 
-- IPv6, UDP, IP fragmentation/reassembly, routing, ICMP, ARP, and raw Ethernet
+- IPv6 extension headers/fragmentation, IPv4 fragment transmission, forwarding, PMTU discovery, multicast, and raw Ethernet
+- Neighbor discovery and ARP (not required by the layer-3 TUN topology); multi-link route output
 - Simultaneous open, TCP Fast Open, ECN, urgent data, Nagle, and keepalives
 - PAWS timestamp rejection, timestamp-derived RTT sampling, and full RFC 7323 behavior
 - RFC 6675 SACK loss recovery and complete RFC 6582 NewReno edge-case coverage
@@ -336,11 +380,15 @@ SYN appears, verify `ip route get 10.0.0.2` selects `tun0`.
 2. Complete RFC 6675 SACK recovery, PAWS, and remaining NewReno edge cases.
 3. Bound the application send queue and add blocking backpressure semantics.
 4. Harden cookies/backlogs under adversarial load and add property-based/fuzz testing.
-5. Run an interoperability matrix across Linux kernel versions before adding another protocol.
+5. Run an interoperability matrix across Linux kernel versions and harden IPv6 extension-header handling.
 
 ## RFC references
 
 - [RFC 791: Internet Protocol](https://www.rfc-editor.org/rfc/rfc791)
+- [RFC 8200: Internet Protocol, Version 6](https://www.rfc-editor.org/rfc/rfc8200)
+- [RFC 768: User Datagram Protocol](https://www.rfc-editor.org/rfc/rfc768)
+- [RFC 792: Internet Control Message Protocol](https://www.rfc-editor.org/rfc/rfc792)
+- [RFC 4443: ICMP for IPv6](https://www.rfc-editor.org/rfc/rfc4443)
 - [RFC 1071: Computing the Internet Checksum](https://www.rfc-editor.org/rfc/rfc1071)
 - [RFC 9293: Transmission Control Protocol](https://www.rfc-editor.org/rfc/rfc9293)
 - [RFC 6298: Computing TCP's Retransmission Timer](https://www.rfc-editor.org/rfc/rfc6298)

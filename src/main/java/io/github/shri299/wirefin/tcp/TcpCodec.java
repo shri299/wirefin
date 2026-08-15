@@ -1,7 +1,7 @@
 package io.github.shri299.wirefin.tcp;
 
-import io.github.shri299.wirefin.ipv4.InternetChecksum;
-import io.github.shri299.wirefin.ipv4.Ipv4Address;
+import io.github.shri299.wirefin.ip.IpAddress;
+import io.github.shri299.wirefin.ip.TransportChecksum;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
@@ -9,7 +9,7 @@ import java.util.Arrays;
 public final class TcpCodec {
     private TcpCodec() {}
 
-    public static TcpSegment parse(byte[] wire, Ipv4Address source, Ipv4Address destination) {
+    public static TcpSegment parse(byte[] wire, IpAddress source, IpAddress destination) {
         if (wire.length < 20) throw new MalformedSegmentException("TCP segment shorter than minimum header");
         int dataOffset = (wire[12] >>> 4) & 0xf;
         int headerLength = dataOffset * 4;
@@ -29,7 +29,7 @@ public final class TcpCodec {
                 Arrays.copyOfRange(wire, 20, headerLength), Arrays.copyOfRange(wire, headerLength, wire.length));
     }
 
-    public static byte[] serialize(TcpSegment segment, Ipv4Address source, Ipv4Address destination) {
+    public static byte[] serialize(TcpSegment segment, IpAddress source, IpAddress destination) {
         int length = segment.headerLength() + segment.payload().length;
         if (length > 0xffff) throw new IllegalArgumentException("TCP segment too long for IPv4");
         byte[] wire = new byte[length];
@@ -43,15 +43,12 @@ public final class TcpCodec {
         return wire;
     }
 
-    public static boolean checksumValid(byte[] wire, Ipv4Address source, Ipv4Address destination) {
+    public static boolean checksumValid(byte[] wire, IpAddress source, IpAddress destination) {
         return checksum(wire, source, destination) == 0;
     }
 
-    private static int checksum(byte[] wire, Ipv4Address source, Ipv4Address destination) {
-        ByteBuffer pseudo = ByteBuffer.allocate(12 + wire.length).order(ByteOrder.BIG_ENDIAN);
-        pseudo.putInt(source.value()).putInt(destination.value()).put((byte) 0).put((byte) 6).putShort((short) wire.length);
-        pseudo.put(wire);
-        return InternetChecksum.compute(pseudo.array());
+    private static int checksum(byte[] wire, IpAddress source, IpAddress destination) {
+        return TransportChecksum.compute(wire, source, destination, 6);
     }
 
     public static final class MalformedSegmentException extends IllegalArgumentException {

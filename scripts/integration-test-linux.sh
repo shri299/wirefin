@@ -13,8 +13,11 @@ done
 TUN_NAME="${WIREFIN_TUN:-wf-tun0}"
 HOST_ADDRESS="${WIREFIN_HOST_ADDRESS:-10.77.0.1}"
 STACK_ADDRESS="${WIREFIN_STACK_ADDRESS:-10.77.0.2}"
+HOST_ADDRESS6="${WIREFIN_HOST_ADDRESS6:-fd00:77::1}"
+STACK_ADDRESS6="${WIREFIN_STACK_ADDRESS6:-fd00:77::2}"
 PORT="${WIREFIN_PORT:-18080}"
 CLIENT_PORT="${WIREFIN_CLIENT_PORT:-18081}"
+UDP_PORT="${WIREFIN_UDP_PORT:-18082}"
 RUN_DIR="$(mktemp -d)"
 STACK_PID=""
 TCPDUMP_PID=""
@@ -55,10 +58,11 @@ mvn --batch-mode clean package
 sudo modprobe tun 2>/dev/null || true
 sudo ip tuntap add dev "$TUN_NAME" mode tun user "$USER"
 sudo ip address add "$HOST_ADDRESS/30" dev "$TUN_NAME"
+sudo ip -6 address add "$HOST_ADDRESS6/64" dev "$TUN_NAME"
 sudo ip link set dev "$TUN_NAME" up
 
 sudo tcpdump -U -i "$TUN_NAME" -nn -s 0 -w "$RUN_DIR/wirefin.pcap" \
-  "tcp port $PORT or tcp port $CLIENT_PORT" \
+  "icmp or icmp6 or udp port $UDP_PORT or tcp port $PORT or tcp port $CLIENT_PORT" \
   >"$RUN_DIR/tcpdump.log" 2>&1 &
 TCPDUMP_PID=$!
 
@@ -70,7 +74,7 @@ done
 grep -q "listening on $TUN_NAME" "$RUN_DIR/tcpdump.log"
 
 java -jar target/wirefin-0.1.0-SNAPSHOT-all.jar \
-  --tun "$TUN_NAME" --address "$STACK_ADDRESS" --port "$PORT" --debug \
+  --tun "$TUN_NAME" --address "$STACK_ADDRESS" --address6 "$STACK_ADDRESS6" --port "$PORT" --udp-port "$UDP_PORT" --debug \
   >"$RUN_DIR/wirefin.log" 2>&1 &
 STACK_PID=$!
 
@@ -83,6 +87,20 @@ grep -q "Wirefin listening" "$RUN_DIR/wirefin.log"
 
 BODY="$(curl --fail --silent --show-error --http1.1 --max-time 5 "http://$STACK_ADDRESS:$PORT/")"
 [[ "$BODY" == "Hello from userspace TCP" ]] || { echo "Unexpected response: $BODY" >&2; exit 1; }
+BODY6="$(curl --fail --silent --show-error --http1.1 --max-time 5 --noproxy '*' "http://[$STACK_ADDRESS6]:$PORT/")"
+[[ "$BODY6" == "Hello from userspace TCP" ]] || { echo "Unexpected IPv6 response: $BODY6" >&2; exit 1; }
+ping -c 1 -W 2 "$STACK_ADDRESS" >/dev/null
+ping -6 -c 1 -W 2 "$STACK_ADDRESS6" >/dev/null
+python3 - "$STACK_ADDRESS" "$STACK_ADDRESS6" "$UDP_PORT" <<'PY'
+import socket, sys
+for family, address in ((socket.AF_INET, sys.argv[1]), (socket.AF_INET6, sys.argv[2])):
+    sock = socket.socket(family, socket.SOCK_DGRAM); sock.settimeout(3)
+    message = ("wirefin-udp4" if family == socket.AF_INET else "wirefin-udp6").encode()
+    sock.sendto(message, (address, int(sys.argv[3])))
+    reply, _ = sock.recvfrom(2048)
+    assert reply == message, (reply, message)
+    sock.close()
+PY
 
 kill "$STACK_PID"
 wait "$STACK_PID" 2>/dev/null || true
@@ -116,4 +134,5 @@ grep -q 'Flags \[F\.\]' <<<"$TRACE"
 grep -q "$CLIENT_PORT" <<<"$TRACE"
 
 echo "Linux kernel TCP ↔ Wirefin passive and active interoperability passed."
+echo "Linux kernel IPv4/IPv6 ping, UDP echo, and dual-stack passive TCP interoperability passed."
 echo "$TRACE"

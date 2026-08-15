@@ -1,8 +1,17 @@
 package io.github.shri299.wirefin.runtime;
 
+import io.github.shri299.wirefin.icmp.IcmpCodec;
+import io.github.shri299.wirefin.icmp.IcmpMessage;
+import io.github.shri299.wirefin.ip.IpAddress;
+import io.github.shri299.wirefin.ip.IpProtocolDispatcher;
 import io.github.shri299.wirefin.ipv4.Ipv4Address;
 import io.github.shri299.wirefin.ipv4.Ipv4Codec;
+import io.github.shri299.wirefin.ipv4.Ipv4FragmentReassembler;
 import io.github.shri299.wirefin.ipv4.Ipv4Packet;
+import io.github.shri299.wirefin.ipv6.Ipv6Address;
+import io.github.shri299.wirefin.ipv6.Ipv6Codec;
+import io.github.shri299.wirefin.ipv6.Ipv6Packet;
+import io.github.shri299.wirefin.socket.UdpReceivedDatagram;
 import io.github.shri299.wirefin.tcp.TcpCodec;
 import io.github.shri299.wirefin.tcp.TcpFlags;
 import io.github.shri299.wirefin.tcp.TcpOptions;
@@ -12,11 +21,16 @@ import io.github.shri299.wirefin.tcp.connection.TcpConnectionKey;
 import io.github.shri299.wirefin.tcp.connection.TcpConnectionTable;
 import io.github.shri299.wirefin.tcp.reliability.SequenceNumber;
 import io.github.shri299.wirefin.tcp.state.TcpState;
+import io.github.shri299.wirefin.udp.UdpCodec;
+import io.github.shri299.wirefin.udp.UdpDatagram;
 
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.Map;
+import java.util.Collection;
+import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -27,7 +41,10 @@ import java.util.logging.Logger;
 /** Pure packet-in/packet-out protocol core; it has no dependency on TUN or kernel sockets. */
 public final class PacketProcessor {
     private static final Logger LOG = Logger.getLogger(PacketProcessor.class.getName());
-    private final Ipv4Address localAddress;
+    private final Map<Integer, IpAddress> localAddresses;
+    private final IpProtocolDispatcher dispatcher = new IpProtocolDispatcher();
+    private final Ipv4FragmentReassembler fragments = new Ipv4FragmentReassembler();
+    private final ConcurrentHashMap<Integer, Consumer<UdpReceivedDatagram>> udpBindings = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, ListenerState> listeners = new ConcurrentHashMap<>();
     private final TcpConnectionTable connections = new TcpConnectionTable();
     private final LongSupplier isnSource;
@@ -47,9 +64,24 @@ public final class PacketProcessor {
     }
     public PacketProcessor(Ipv4Address localAddress, LongSupplier isnSource, Consumer<byte[]> asynchronousOutput,
                            LongSupplier nanoTime, TcpConnection.Config connectionConfig) {
-        this.localAddress = localAddress; this.isnSource = isnSource; this.asynchronousOutput = asynchronousOutput;
+        this(List.of(localAddress), isnSource, asynchronousOutput, nanoTime, connectionConfig);
+    }
+    public PacketProcessor(Collection<? extends IpAddress> localAddresses, LongSupplier isnSource,
+                           Consumer<byte[]> asynchronousOutput, LongSupplier nanoTime,
+                           TcpConnection.Config connectionConfig) {
+        if (localAddresses == null || localAddresses.isEmpty()) throw new IllegalArgumentException("local address required");
+        var map = new java.util.HashMap<Integer, IpAddress>();
+        for (IpAddress address : localAddresses) {
+            if (map.putIfAbsent(address.bitLength(), address) != null)
+                throw new IllegalArgumentException("only one local address per IP family is supported");
+        }
+        this.localAddresses = Map.copyOf(map); this.isnSource = isnSource; this.asynchronousOutput = asynchronousOutput;
         this.nanoTime = nanoTime; this.connectionConfig = connectionConfig;
         this.cookieSecret = ThreadLocalRandom.current().nextLong();
+        dispatcher.register(6, this::processTcp);
+        dispatcher.register(17, this::processUdp);
+        dispatcher.register(1, this::processIcmpV4);
+        dispatcher.register(58, this::processIcmpV6);
     }
 
     public void listen(int port) { listen(port, 128, false, ignored -> { }); }
@@ -61,8 +93,10 @@ public final class PacketProcessor {
             throw new IllegalStateException("port already listening: " + port);
     }
 
-    public TcpConnection connect(Ipv4Address remoteAddress, int remotePort) {
+    public TcpConnection connect(IpAddress remoteAddress, int remotePort) {
         if (remotePort < 1 || remotePort > 65_535) throw new IllegalArgumentException("invalid remote port");
+        IpAddress localAddress = localAddresses.get(remoteAddress.bitLength());
+        if (localAddress == null) throw new IllegalArgumentException("no local address for remote IP family");
         for (int attempts = 0; attempts < 16_384; attempts++) {
             int port = 49_152 + Math.floorMod(nextEphemeralPort.getAndIncrement() - 49_152, 16_384);
             TcpConnectionKey key = new TcpConnectionKey(localAddress, port, remoteAddress, remotePort);
@@ -76,18 +110,35 @@ public final class PacketProcessor {
     }
 
     public List<byte[]> process(byte[] rawPacket) {
-        final Ipv4Packet ip;
-        final TcpSegment tcp;
         try {
-            ip = Ipv4Codec.parse(rawPacket);
-            if (!ip.destination().equals(localAddress) || ip.protocol() != Ipv4Packet.PROTOCOL_TCP || ip.isFragmented()) return List.of();
-            tcp = TcpCodec.parse(ip.payload(), ip.source(), ip.destination());
+            if (rawPacket.length == 0) return List.of();
+            int version = (rawPacket[0] >>> 4) & 0xf;
+            if (version == 4) {
+                Ipv4Packet parsed = Ipv4Codec.parse(rawPacket);
+                IpAddress local = localAddresses.get(32);
+                if (!parsed.destination().equals(local)) return List.of();
+                var complete = fragments.accept(parsed, nanoTime.getAsLong());
+                if (complete.isEmpty()) return List.of();
+                Ipv4Packet ip = complete.get();
+                return dispatcher.dispatch(ip.protocol(), ip.source(), ip.destination(), ip.payload(), Ipv4Codec.serialize(ip));
+            }
+            if (version == 6) {
+                Ipv6Packet ip = Ipv6Codec.parse(rawPacket);
+                IpAddress local = localAddresses.get(128);
+                if (!ip.destination().equals(local)) return List.of();
+                return dispatcher.dispatch(ip.nextHeader(), ip.source(), ip.destination(), ip.payload(), rawPacket);
+            }
+            return List.of();
         } catch (IllegalArgumentException malformed) {
             LOG.fine(() -> "Dropping malformed packet: " + malformed.getMessage()); return List.of();
         }
-        LOG.fine(() -> "RX TCP src=" + ip.source() + ":" + tcp.sourcePort() + " dst=" + ip.destination() +
+    }
+
+    private List<byte[]> processTcp(IpAddress source, IpAddress destination, byte[] payload, byte[] originalPacket) {
+        final TcpSegment tcp = TcpCodec.parse(payload, source, destination);
+        LOG.fine(() -> "RX TCP src=" + source + ":" + tcp.sourcePort() + " dst=" + destination +
                 ":" + tcp.destinationPort() + " flags=" + TcpFlags.describe(tcp.flags()) + " seq=" + tcp.sequenceNumber());
-        TcpConnectionKey key = new TcpConnectionKey(localAddress, tcp.destinationPort(), ip.source(), tcp.sourcePort());
+        TcpConnectionKey key = new TcpConnectionKey(destination, tcp.destinationPort(), source, tcp.sourcePort());
         TcpConnection connection = connections.find(key).orElse(null);
         List<TcpSegment> replies = new ArrayList<>();
         ListenerState listener = listeners.get(tcp.destinationPort());
@@ -148,11 +199,65 @@ public final class PacketProcessor {
 
     private byte[] encode(TcpSegment segment, TcpConnectionKey key) {
         byte[] tcp = TcpCodec.serialize(segment, key.localAddress(), key.remoteAddress());
-        Ipv4Packet ip = new Ipv4Packet(0, nextIpIdentification.getAndIncrement() & 0xffff, 2, 0, 64,
-                Ipv4Packet.PROTOCOL_TCP, key.localAddress(), key.remoteAddress(), new byte[0], tcp);
         LOG.fine(() -> "TX TCP flags=" + TcpFlags.describe(segment.flags()) + " seq=" + segment.sequenceNumber() +
                 " ack=" + segment.acknowledgementNumber() + " len=" + segment.payload().length);
-        return Ipv4Codec.serialize(ip);
+        return encodeIp(key.localAddress(), key.remoteAddress(), 6, tcp);
+    }
+
+    private List<byte[]> processUdp(IpAddress source, IpAddress destination, byte[] payload, byte[] originalPacket) {
+        UdpDatagram datagram = UdpCodec.parse(payload, source, destination);
+        Consumer<UdpReceivedDatagram> binding = udpBindings.get(datagram.destinationPort());
+        if (binding != null) {
+            binding.accept(new UdpReceivedDatagram(source, datagram.sourcePort(), datagram.payload()));
+            return List.of();
+        }
+        if (destination.bitLength() == 32) {
+            int quoteLength = Math.min(originalPacket.length, 28);
+            IcmpMessage unreachable = new IcmpMessage(3, 3, 0, Arrays.copyOf(originalPacket, quoteLength));
+            byte[] icmp = IcmpCodec.serializeV4(unreachable);
+            return List.of(encodeIp(destination, source, 1, icmp));
+        }
+        int quoteLength = Math.min(originalPacket.length, 1232);
+        IcmpMessage unreachable = new IcmpMessage(1, 4, 0, Arrays.copyOf(originalPacket, quoteLength));
+        byte[] icmp = IcmpCodec.serializeV6(unreachable, destination, source);
+        return List.of(encodeIp(destination, source, 58, icmp));
+    }
+
+    private List<byte[]> processIcmpV4(IpAddress source, IpAddress destination, byte[] payload, byte[] originalPacket) {
+        IcmpMessage request = IcmpCodec.parseV4(payload);
+        if (request.type() != 8 || request.code() != 0) return List.of();
+        return List.of(encodeIp(destination, source, 1,
+                IcmpCodec.serializeV4(new IcmpMessage(0, 0, request.restOfHeader(), request.payload()))));
+    }
+
+    private List<byte[]> processIcmpV6(IpAddress source, IpAddress destination, byte[] payload, byte[] originalPacket) {
+        IcmpMessage request = IcmpCodec.parseV6(payload, source, destination);
+        if (request.type() != 128 || request.code() != 0) return List.of();
+        IcmpMessage reply = new IcmpMessage(129, 0, request.restOfHeader(), request.payload());
+        return List.of(encodeIp(destination, source, 58, IcmpCodec.serializeV6(reply, destination, source)));
+    }
+
+    private byte[] encodeIp(IpAddress source, IpAddress destination, int protocol, byte[] payload) {
+        if (source instanceof Ipv4Address source4 && destination instanceof Ipv4Address destination4) {
+            return Ipv4Codec.serialize(new Ipv4Packet(0, nextIpIdentification.getAndIncrement() & 0xffff,
+                    2, 0, 64, protocol, source4, destination4, new byte[0], payload));
+        }
+        if (source instanceof Ipv6Address source6 && destination instanceof Ipv6Address destination6) {
+            return Ipv6Codec.serialize(new Ipv6Packet(0, 0, protocol, 64, source6, destination6, payload));
+        }
+        throw new IllegalArgumentException("mixed IP families");
+    }
+
+    public void bindUdp(int port, Consumer<UdpReceivedDatagram> receiver) {
+        if (port < 1 || port > 65_535 || receiver == null) throw new IllegalArgumentException("invalid UDP binding");
+        if (udpBindings.putIfAbsent(port, receiver) != null) throw new IllegalStateException("UDP port already bound: " + port);
+    }
+    public void unbindUdp(int port) { udpBindings.remove(port); }
+    public void sendUdp(int sourcePort, IpAddress destination, int destinationPort, byte[] payload) {
+        IpAddress source = localAddresses.get(destination.bitLength());
+        if (source == null) throw new IllegalArgumentException("no local address for remote IP family");
+        byte[] udp = UdpCodec.serialize(new UdpDatagram(sourcePort, destinationPort, payload), source, destination);
+        asynchronousOutput.accept(encodeIp(source, destination, 17, udp));
     }
     private static TcpSegment resetFor(TcpSegment incoming) {
         if (incoming.has(TcpFlags.ACK)) return new TcpSegment(incoming.destinationPort(), incoming.sourcePort(),

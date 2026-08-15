@@ -6,6 +6,8 @@ public record Ipv4Packet(int dscpEcn, int identification, int flags, int fragmen
                          int ttl, int protocol, Ipv4Address source, Ipv4Address destination,
                          byte[] options, byte[] payload) {
     public static final int PROTOCOL_TCP = 6;
+    public static final int PROTOCOL_ICMP = 1;
+    public static final int PROTOCOL_UDP = 17;
 
     public Ipv4Packet {
         if (dscpEcn < 0 || dscpEcn > 255 || identification < 0 || identification > 0xffff ||

@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Minimal Linux TUN wrapper. Linux creates/configures the interface outside this
- * process; this class only attaches to it and exchanges raw IPv4 packets.
+ * process; this class only attaches to it and exchanges raw IPv4/IPv6 packets.
  */
 public final class TunDevice implements PacketDevice {
     private static final int O_RDWR = 2;
