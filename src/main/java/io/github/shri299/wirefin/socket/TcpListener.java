@@ -6,7 +6,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
 public final class TcpListener {
-    private final BlockingQueue<TcpConnection> accepted = new LinkedBlockingQueue<>();
+    private final BlockingQueue<TcpConnection> accepted;
     private final PacketProcessor processor;
 
     public TcpListener(PacketProcessor processor, int port) {
@@ -14,12 +14,13 @@ public final class TcpListener {
     }
 
     public TcpListener(PacketProcessor processor, int port, int backlog, boolean synCookies) {
-        this.processor = processor;
-        processor.listen(port, backlog, synCookies, accepted::offer);
+        this.processor = processor; accepted = new LinkedBlockingQueue<>(backlog);
+        processor.listen(port, backlog, synCookies, connection -> { accepted.offer(connection); processor.queueDepth(accepted.size()); });
     }
 
     public TcpSocket accept() throws InterruptedException {
         TcpConnection connection = accepted.take();
+        processor.queueDepth(accepted.size());
         processor.accepted(connection.key());
         return new TcpSocket(connection, processor);
     }

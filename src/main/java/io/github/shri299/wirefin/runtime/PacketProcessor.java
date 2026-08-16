@@ -12,6 +12,7 @@ import io.github.shri299.wirefin.ipv6.Ipv6Address;
 import io.github.shri299.wirefin.ipv6.Ipv6Codec;
 import io.github.shri299.wirefin.ipv6.Ipv6Packet;
 import io.github.shri299.wirefin.socket.UdpReceivedDatagram;
+import io.github.shri299.wirefin.metrics.NetworkMetrics;
 import io.github.shri299.wirefin.tcp.TcpCodec;
 import io.github.shri299.wirefin.tcp.TcpFlags;
 import io.github.shri299.wirefin.tcp.TcpOptions;
@@ -36,6 +37,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 import java.util.logging.Logger;
 
 /** Pure packet-in/packet-out protocol core; it has no dependency on TUN or kernel sockets. */
@@ -44,7 +46,7 @@ public final class PacketProcessor {
     private final Map<Integer, IpAddress> localAddresses;
     private final IpProtocolDispatcher dispatcher = new IpProtocolDispatcher();
     private final Ipv4FragmentReassembler fragments = new Ipv4FragmentReassembler();
-    private final ConcurrentHashMap<Integer, Consumer<UdpReceivedDatagram>> udpBindings = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, Predicate<UdpReceivedDatagram>> udpBindings = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, ListenerState> listeners = new ConcurrentHashMap<>();
     private final TcpConnectionTable connections = new TcpConnectionTable();
     private final LongSupplier isnSource;
@@ -54,6 +56,7 @@ public final class PacketProcessor {
     private final LongSupplier nanoTime;
     private final TcpConnection.Config connectionConfig;
     private final long cookieSecret;
+    private final NetworkMetrics metrics;
 
     public PacketProcessor(Ipv4Address localAddress) {
         this(localAddress, () -> ThreadLocalRandom.current().nextLong(1L << 32), ignored -> { });
@@ -69,6 +72,11 @@ public final class PacketProcessor {
     public PacketProcessor(Collection<? extends IpAddress> localAddresses, LongSupplier isnSource,
                            Consumer<byte[]> asynchronousOutput, LongSupplier nanoTime,
                            TcpConnection.Config connectionConfig) {
+        this(localAddresses, isnSource, asynchronousOutput, nanoTime, connectionConfig, new NetworkMetrics());
+    }
+    public PacketProcessor(Collection<? extends IpAddress> localAddresses, LongSupplier isnSource,
+                           Consumer<byte[]> asynchronousOutput, LongSupplier nanoTime,
+                           TcpConnection.Config connectionConfig, NetworkMetrics metrics) {
         if (localAddresses == null || localAddresses.isEmpty()) throw new IllegalArgumentException("local address required");
         var map = new java.util.HashMap<Integer, IpAddress>();
         for (IpAddress address : localAddresses) {
@@ -77,6 +85,7 @@ public final class PacketProcessor {
         }
         this.localAddresses = Map.copyOf(map); this.isnSource = isnSource; this.asynchronousOutput = asynchronousOutput;
         this.nanoTime = nanoTime; this.connectionConfig = connectionConfig;
+        this.metrics = java.util.Objects.requireNonNull(metrics);
         this.cookieSecret = ThreadLocalRandom.current().nextLong();
         dispatcher.register(6, this::processTcp);
         dispatcher.register(17, this::processUdp);
@@ -130,6 +139,7 @@ public final class PacketProcessor {
             }
             return List.of();
         } catch (IllegalArgumentException malformed) {
+            metrics.drop();
             LOG.fine(() -> "Dropping malformed packet: " + malformed.getMessage()); return List.of();
         }
     }
@@ -206,9 +216,9 @@ public final class PacketProcessor {
 
     private List<byte[]> processUdp(IpAddress source, IpAddress destination, byte[] payload, byte[] originalPacket) {
         UdpDatagram datagram = UdpCodec.parse(payload, source, destination);
-        Consumer<UdpReceivedDatagram> binding = udpBindings.get(datagram.destinationPort());
+        Predicate<UdpReceivedDatagram> binding = udpBindings.get(datagram.destinationPort());
         if (binding != null) {
-            binding.accept(new UdpReceivedDatagram(source, datagram.sourcePort(), datagram.payload()));
+            if (!binding.test(new UdpReceivedDatagram(source, datagram.sourcePort(), datagram.payload()))) metrics.drop();
             return List.of();
         }
         if (destination.bitLength() == 32) {
@@ -249,10 +259,14 @@ public final class PacketProcessor {
     }
 
     public void bindUdp(int port, Consumer<UdpReceivedDatagram> receiver) {
+        bindUdpBounded(port, datagram -> { receiver.accept(datagram); return true; });
+    }
+    public void bindUdpBounded(int port, Predicate<UdpReceivedDatagram> receiver) {
         if (port < 1 || port > 65_535 || receiver == null) throw new IllegalArgumentException("invalid UDP binding");
         if (udpBindings.putIfAbsent(port, receiver) != null) throw new IllegalStateException("UDP port already bound: " + port);
     }
     public void unbindUdp(int port) { udpBindings.remove(port); }
+    public void queueDepth(int depth) { metrics.queueDepth(depth); }
     public void sendUdp(int sourcePort, IpAddress destination, int destinationPort, byte[] payload) {
         IpAddress source = localAddresses.get(destination.bitLength());
         if (source == null) throw new IllegalArgumentException("no local address for remote IP family");
@@ -274,13 +288,16 @@ public final class PacketProcessor {
     }
     public void pollRetransmissions(long nowNanos) {
         for (TcpConnection connection : connections.snapshot()) {
-            transmit(connection, connection.retransmissionsDue(nowNanos));
+            List<TcpSegment> due = connection.retransmissionsDue(nowNanos);
+            if (!due.isEmpty()) { metrics.retransmissions(due.size()); metrics.rtoEvent(); }
+            transmit(connection, due);
             if (connection.expireTimeWait(nowNanos) || connection.state() == TcpState.CLOSED) {
                 connections.remove(connection.key());
                 ListenerState listener = listeners.get(connection.key().localPort());
                 if (listener != null) listener.remove(connection.key());
             }
         }
+        metrics.activeConnections(connections.size());
     }
     public void accepted(TcpConnectionKey key) {
         ListenerState listener = listeners.get(key.localPort());
