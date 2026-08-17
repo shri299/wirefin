@@ -7,7 +7,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class LinkCodecTest {
     @Test void ethernetAndArpRoundTrip() {
-        var a = MacAddress.parse("02:00:00:00:00:01"), b = MacAddress.parse("02:00:00:00:00:02");
+        MacAddress a = MacAddress.parse("02:00:00:00:00:01"), b = MacAddress.parse("02:00:00:00:00:02");
         var frame = new EthernetFrame(b, a, EthernetFrame.IPV4, new byte[]{1,2,3});
         assertEquals(frame, EthernetCodec.parse(EthernetCodec.serialize(frame)));
         var arp = new ArpPacket(ArpPacket.REQUEST, a, Ipv4Address.parse("192.0.2.1"),
