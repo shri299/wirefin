@@ -7,6 +7,7 @@ import io.github.shri299.wirefin.runtime.PacketProcessor;
 import io.github.shri299.wirefin.tcp.*;
 import io.github.shri299.wirefin.tcp.connection.TcpConnection;
 import io.github.shri299.wirefin.udp.*;
+import io.github.shri299.wirefin.view.*;
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
 import java.util.List;
@@ -28,6 +29,7 @@ public class ProtocolBenchmark {
         Ipv6Packet ipv6;
         TcpSegment fullTcp;
         byte[] ipv4Wire, ipv6Wire, tcpSynWire, udpWire, icmpWire;
+        java.nio.ByteBuffer ipv4Memory, ipv6Memory;
         PacketProcessor udpProcessor, tcpProcessor;
 
         @Setup(Level.Trial) public void setup() {
@@ -35,9 +37,11 @@ public class ProtocolBenchmark {
             fullTcp = new TcpSegment(1, 2, 3, 4, TcpFlags.ACK, 65_535, 0, new byte[0], payload);
             ipv4 = new Ipv4Packet(0, 7, 2, 0, 64, 17, remote4, local4, new byte[0], udp);
             ipv4Wire = Ipv4Codec.serialize(ipv4);
+            ipv4Memory = java.nio.ByteBuffer.wrap(ipv4Wire);
             ipv6 = new Ipv6Packet(0, 0, 17, 64, remote6, local6,
                     UdpCodec.serialize(new UdpDatagram(40_000, 9_000, new byte[32]), remote6, local6));
             ipv6Wire = Ipv6Codec.serialize(ipv6);
+            ipv6Memory = java.nio.ByteBuffer.wrap(ipv6Wire);
             tcpSynWire = Ipv4Codec.serialize(new Ipv4Packet(0, 8, 2, 0, 64, 6, remote4, local4, new byte[0],
                     TcpCodec.serialize(new TcpSegment(40_001, 9_001, 1, 0, TcpFlags.SYN, 65_535, 0,
                             new byte[0], new byte[0]), remote4, local4)));
@@ -56,6 +60,8 @@ public class ProtocolBenchmark {
     @Benchmark public Ipv4Packet parseIpv4(Packets state) { return Ipv4Codec.parse(state.ipv4Wire); }
     @Benchmark public byte[] serializeIpv4(Packets state) { return Ipv4Codec.serialize(state.ipv4); }
     @Benchmark public Ipv6Packet parseIpv6(Packets state) { return Ipv6Codec.parse(state.ipv6Wire); }
+    @Benchmark public Ipv4PacketView viewIpv4(Packets state) { return Ipv4PacketView.parse(state.ipv4Memory, 0, state.ipv4Wire.length); }
+    @Benchmark public Ipv6PacketView viewIpv6(Packets state) { return Ipv6PacketView.parse(state.ipv6Memory, 0, state.ipv6Wire.length); }
     @Benchmark public byte[] serializeIpv6(Packets state) { return Ipv6Codec.serialize(state.ipv6); }
     @Benchmark public byte[] serializeFullSizeTcp(Packets state) {
         return TcpCodec.serialize(state.fullTcp, state.local4, state.remote4);
