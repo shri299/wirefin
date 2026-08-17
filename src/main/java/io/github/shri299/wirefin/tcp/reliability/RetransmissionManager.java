@@ -118,6 +118,8 @@ public final class RetransmissionManager {
     public synchronized long bytesInFlight() { return outstanding.values().stream().mapToLong(v -> v.segment.sequenceSpaceLength()).sum(); }
     public synchronized int size() { return outstanding.size(); }
     public synchronized long rtoNanos() { return estimator.rtoNanos(); }
+    public synchronized long smoothedRttNanos() { return estimator.smoothedRttNanos(); }
+    public synchronized long rttVariationNanos() { return estimator.rttVariationNanos(); }
     public synchronized int sackBlockCount() { return scoreboard.size(); }
 
     public record AckResult(int newlyAcknowledgedBytes, boolean sampledRtt, long rtoNanos) {}

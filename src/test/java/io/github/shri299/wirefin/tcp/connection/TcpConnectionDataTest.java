@@ -144,6 +144,17 @@ class TcpConnectionDataTest {
         assertThrows(IllegalStateException.class,()->connection.send(bytes("9"),3));
     }
 
+    @Test void exposesImmutableControlBlockDiagnostics() {
+        TcpConnection connection=established(32,16,1000);
+        connection.send(bytes("abc"),10);
+        connection.receive(segment(501,10_004,TcpFlags.ACK,bytes("xy"),1000),20);
+        TcpConnectionSnapshot snapshot=connection.snapshot();
+        assertTrue(snapshot.id()>0);assertEquals(KEY,snapshot.key());assertEquals(TcpState.ESTABLISHED,snapshot.state());
+        assertEquals(3,snapshot.bytesSent());assertEquals(2,snapshot.bytesReceived());assertEquals(0,snapshot.bytesInFlight());
+        assertTrue(snapshot.smoothedRttNanos()>0);assertEquals(connection.rtoNanos(),snapshot.rtoNanos());
+        assertEquals(503,snapshot.receiveNext());assertEquals(10_004,snapshot.sendUnacknowledged());
+    }
+
     private static TcpConnection established(int capacity, Integer mss, int window) {
         byte[] options = mss == null ? new byte[0] : TcpOptions.mss(mss);
         TcpSegment syn = new TcpSegment(50000, 8080, 500, 0, TcpFlags.SYN, window, 0, options, new byte[0]);

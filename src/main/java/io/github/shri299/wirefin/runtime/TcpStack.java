@@ -8,6 +8,7 @@ import io.github.shri299.wirefin.socket.TcpListener;
 import io.github.shri299.wirefin.socket.TcpSocket;
 import io.github.shri299.wirefin.socket.UdpSocket;
 import io.github.shri299.wirefin.metrics.NetworkMetrics;
+import io.github.shri299.wirefin.tcp.connection.TcpConnectionSnapshot;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -108,6 +109,8 @@ public final class TcpStack implements AutoCloseable {
     }
 
     public NetworkMetrics.Snapshot metrics() { return metrics.snapshot(); }
+    /** Educational equivalent of a small, read-only subset of {@code ss -ti}. */
+    public java.util.List<TcpConnectionSnapshot> connections() { return processor.connectionSnapshots(); }
 
     @Override public void close() throws IOException {
         running.set(false);

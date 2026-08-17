@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.logging.Logger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Per-connection TCP control block. All protocol mutations are serialized. */
 public final class TcpConnection {
@@ -24,7 +25,9 @@ public final class TcpConnection {
     public static final int DEFAULT_RECEIVE_WINDOW = 65_535;
     public static final int DEFAULT_MSS = 1400;
     public static final int DEFAULT_MAX_PENDING_SEND = 1 << 20;
+    private static final AtomicLong NEXT_ID = new AtomicLong(1);
 
+    private final long id = NEXT_ID.getAndIncrement();
     private final TcpConnectionKey key;
     private final TcpStateMachine states;
     private final Config config;
@@ -54,6 +57,8 @@ public final class TcpConnection {
     private long persistIntervalNanos;
     private int synTransmissions = 1;
     private long metricRetransmissions, metricFastRetransmits, metricRtoEvents;
+    private long totalRetransmissions, totalFastRetransmits, totalRtoEvents;
+    private long totalBytesSent, totalBytesReceived, sackEvents, zeroWindowEvents;
 
     private TcpConnection(TcpConnectionKey key, long isn, TcpSegment peerSyn, long nowNanos, Config config,
                           boolean active) {
@@ -162,7 +167,7 @@ public final class TcpConnection {
         }
 
         if (incoming.payload().length > 0 && canReceiveData()) {
-            receiveBuffer.accept(incoming.sequenceNumber(), incoming.payload());
+            totalBytesReceived += receiveBuffer.accept(incoming.sequenceNumber(), incoming.payload());
             outbound.add(ack());
         }
         if (incoming.has(TcpFlags.FIN)) {
@@ -213,10 +218,15 @@ public final class TcpConnection {
     private void updatePeerOptions(TcpSegment incoming) {
         TcpOptions.Parsed options = TcpOptions.parse(incoming.options());
         if (timestamps) options.timestamp().ifPresent(timestamp -> recentTimestamp = timestamp.value());
-        if (sackPermitted && !options.sackBlocks().isEmpty()) retransmissions.updateSack(options.sackBlocks());
+        if (sackPermitted && !options.sackBlocks().isEmpty()) {
+            sackEvents++;
+            retransmissions.updateSack(options.sackBlocks());
+        }
     }
     private void updateRemoteWindow(TcpSegment incoming) {
+        long previous = remoteWindow;
         remoteWindow = (long) incoming.windowSize() << (incoming.has(TcpFlags.SYN) ? 0 : peerWindowScale);
+        if (previous > 0 && remoteWindow == 0) zeroWindowEvents++;
         if (remoteWindow > 0) { persistDeadline = Long.MAX_VALUE; persistIntervalNanos = config.persistInitial().toNanos(); }
     }
 
@@ -248,6 +258,8 @@ public final class TcpConnection {
                     if (retransmit != null) {
                         metricRetransmissions++;
                         metricFastRetransmits++;
+                        totalRetransmissions++;
+                        totalFastRetransmits++;
                         congestion.onFastRetransmit(bytesInFlight(), sendNext);
                         outbound.add(retransmit);
                     }
@@ -265,6 +277,8 @@ public final class TcpConnection {
                 if (retransmit != null) {
                     metricRetransmissions++;
                     metricFastRetransmits++;
+                    totalRetransmissions++;
+                    totalFastRetransmits++;
                     outbound.add(retransmit);
                 }
             } else congestion.onRecoveryComplete();
@@ -315,6 +329,7 @@ public final class TcpConnection {
             TcpSegment segment = segment(sendNext, receiveNext(), TcpFlags.ACK | TcpFlags.PSH,
                     establishedOptions(), payload);
             sendNext = SequenceNumber.add(sendNext, length);
+            totalBytesSent += length;
             retransmissions.track(segment, nowNanos); result.add(segment);
         }
         return result;
@@ -360,6 +375,8 @@ public final class TcpConnection {
         if (!due.isEmpty()) {
             metricRetransmissions += due.size();
             metricRtoEvents++;
+            totalRetransmissions += due.size();
+            totalRtoEvents++;
             if (states.state() == TcpState.SYN_SENT && ++synTransmissions > config.maximumSynTransmissions()) {
                 reset(); return List.of();
             }
@@ -440,6 +457,16 @@ public final class TcpConnection {
     public synchronized boolean sackPermitted() { return sackPermitted; }
     public synchronized int sackScoreboardBlocks() { return retransmissions.sackBlockCount(); }
     public synchronized long persistDeadline() { return persistDeadline; }
+
+    public synchronized TcpConnectionSnapshot snapshot() {
+        return new TcpConnectionSnapshot(id, key, states.state(), sendUnacknowledged, sendNext, receiveNext(),
+                congestion.congestionWindow(), congestion.slowStartThreshold(), remoteWindow,
+                retransmissions.smoothedRttNanos(), retransmissions.rttVariationNanos(), retransmissions.rtoNanos(),
+                totalRetransmissions, totalFastRetransmits, totalRtoEvents, duplicateAcks,
+                retransmissions.sackBlockCount(), sackEvents, zeroWindowEvents, totalBytesSent, totalBytesReceived,
+                retransmissions.bytesInFlight(), pendingSend.length, receiveBuffer.readableBytes(),
+                receiveBuffer.outOfOrderBytes());
+    }
 
     public synchronized void awaitEstablished(Duration timeout) throws InterruptedException {
         long deadline = System.nanoTime() + timeout.toNanos();

@@ -20,6 +20,7 @@ import io.github.shri299.wirefin.tcp.TcpSegment;
 import io.github.shri299.wirefin.tcp.connection.TcpConnection;
 import io.github.shri299.wirefin.tcp.connection.TcpConnectionKey;
 import io.github.shri299.wirefin.tcp.connection.TcpConnectionTable;
+import io.github.shri299.wirefin.tcp.connection.TcpConnectionSnapshot;
 import io.github.shri299.wirefin.tcp.reliability.SequenceNumber;
 import io.github.shri299.wirefin.tcp.state.TcpState;
 import io.github.shri299.wirefin.udp.UdpCodec;
@@ -313,6 +314,10 @@ public final class PacketProcessor {
     }
     public int halfOpenCount(int port) { ListenerState listener = listeners.get(port); return listener == null ? 0 : listener.halfOpenCount(); }
     public int establishedBacklogCount(int port) { ListenerState listener = listeners.get(port); return listener == null ? 0 : listener.establishedCount(); }
+    public List<TcpConnectionSnapshot> connectionSnapshots() {
+        return connections.snapshot().stream().map(TcpConnection::snapshot)
+                .sorted(java.util.Comparator.comparingLong(TcpConnectionSnapshot::id)).toList();
+    }
 
     private static final class ListenerState {
         private final int backlog;
