@@ -1,6 +1,7 @@
 package io.github.shri299.wirefin.tcp;
 
 import java.util.Arrays;
+import java.nio.ByteBuffer;
 
 public record TcpSegment(int sourcePort, int destinationPort, long sequenceNumber,
                          long acknowledgementNumber, int flags, int windowSize,
@@ -21,6 +22,9 @@ public record TcpSegment(int sourcePort, int destinationPort, long sequenceNumbe
     @Override public byte[] options() { return Arrays.copyOf(options, options.length); }
     @Override public byte[] payload() { return Arrays.copyOf(payload, payload.length); }
     public int headerLength() { return 20 + options.length; }
+    int payloadLength() { return payload.length; }
+    void writeOptionsTo(ByteBuffer destination) { destination.put(options); }
+    void writePayloadTo(ByteBuffer destination) { destination.put(payload); }
     public int sequenceSpaceLength() {
         return payload.length + (TcpFlags.has(flags, TcpFlags.SYN) ? 1 : 0) + (TcpFlags.has(flags, TcpFlags.FIN) ? 1 : 0);
     }

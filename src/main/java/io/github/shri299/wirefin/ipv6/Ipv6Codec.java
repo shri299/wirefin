@@ -19,10 +19,10 @@ public final class Ipv6Codec {
                 new Ipv6Address(source), new Ipv6Address(destination), Arrays.copyOfRange(wire, 40, 40 + payloadLength));
     }
     public static byte[] serialize(Ipv6Packet packet) {
-        ByteBuffer out = ByteBuffer.allocate(40 + packet.payload().length).order(ByteOrder.BIG_ENDIAN);
+        ByteBuffer out = ByteBuffer.allocate(40 + packet.payloadLength()).order(ByteOrder.BIG_ENDIAN);
         out.putInt(6 << 28 | packet.trafficClass() << 20 | packet.flowLabel());
-        out.putShort((short) packet.payload().length).put((byte) packet.nextHeader()).put((byte) packet.hopLimit());
-        out.put(packet.source().bytes()).put(packet.destination().bytes()).put(packet.payload());
+        out.putShort((short) packet.payloadLength()).put((byte) packet.nextHeader()).put((byte) packet.hopLimit());
+        out.put(packet.source().bytes()).put(packet.destination().bytes()); packet.writePayloadTo(out);
         return out.array();
     }
     public static final class MalformedPacketException extends IllegalArgumentException {

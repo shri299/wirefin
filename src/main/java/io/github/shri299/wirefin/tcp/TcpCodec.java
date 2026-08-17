@@ -30,7 +30,7 @@ public final class TcpCodec {
     }
 
     public static byte[] serialize(TcpSegment segment, IpAddress source, IpAddress destination) {
-        int length = segment.headerLength() + segment.payload().length;
+        int length = segment.headerLength() + segment.payloadLength();
         if (length > 0xffff) throw new IllegalArgumentException("TCP segment too long for IPv4");
         byte[] wire = new byte[length];
         ByteBuffer out = ByteBuffer.wrap(wire).order(ByteOrder.BIG_ENDIAN);
@@ -38,7 +38,7 @@ public final class TcpCodec {
         out.putInt((int) segment.sequenceNumber()).putInt((int) segment.acknowledgementNumber());
         out.putShort((short) ((segment.headerLength() / 4 << 12) | segment.flags()));
         out.putShort((short) segment.windowSize()).putShort((short) 0).putShort((short) segment.urgentPointer());
-        out.put(segment.options()).put(segment.payload());
+        segment.writeOptionsTo(out); segment.writePayloadTo(out);
         out.putShort(16, (short) checksum(wire, source, destination));
         return wire;
     }

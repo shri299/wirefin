@@ -23,6 +23,7 @@ public final class TcpConnection {
     private static final Logger LOG = Logger.getLogger(TcpConnection.class.getName());
     public static final int DEFAULT_RECEIVE_WINDOW = 65_535;
     public static final int DEFAULT_MSS = 1400;
+    public static final int DEFAULT_MAX_PENDING_SEND = 1 << 20;
 
     private final TcpConnectionKey key;
     private final TcpStateMachine states;
@@ -52,6 +53,7 @@ public final class TcpConnection {
     private long persistDeadline = Long.MAX_VALUE;
     private long persistIntervalNanos;
     private int synTransmissions = 1;
+    private long metricRetransmissions, metricFastRetransmits, metricRtoEvents;
 
     private TcpConnection(TcpConnectionKey key, long isn, TcpSegment peerSyn, long nowNanos, Config config,
                           boolean active) {
@@ -244,6 +246,8 @@ public final class TcpConnection {
                 if (duplicateAcks == 3) {
                     TcpSegment retransmit = retransmissions.fastRetransmit(nowNanos);
                     if (retransmit != null) {
+                        metricRetransmissions++;
+                        metricFastRetransmits++;
                         congestion.onFastRetransmit(bytesInFlight(), sendNext);
                         outbound.add(retransmit);
                     }
@@ -258,7 +262,11 @@ public final class TcpConnection {
             if (SequenceNumber.lessThan(acknowledgement, congestion.recoveryPoint())) {
                 congestion.onPartialAcknowledgement(result.newlyAcknowledgedBytes());
                 TcpSegment retransmit = retransmissions.fastRetransmit(nowNanos);
-                if (retransmit != null) outbound.add(retransmit);
+                if (retransmit != null) {
+                    metricRetransmissions++;
+                    metricFastRetransmits++;
+                    outbound.add(retransmit);
+                }
             } else congestion.onRecoveryComplete();
         } else if (states.state() != TcpState.SYN_RECEIVED && states.state() != TcpState.FIN_WAIT_1 &&
                 states.state() != TcpState.CLOSING && states.state() != TcpState.LAST_ACK)
@@ -288,6 +296,8 @@ public final class TcpConnection {
         lastNowNanos = nowNanos;
         if (states.state() != TcpState.ESTABLISHED && states.state() != TcpState.CLOSE_WAIT)
             throw new IllegalStateException("cannot write in " + states.state());
+        if (bytes.length > config.maximumPendingSendBytes() - pendingSend.length)
+            throw new IllegalStateException("TCP send buffer full");
         byte[] combined = Arrays.copyOf(pendingSend, pendingSend.length + bytes.length);
         System.arraycopy(bytes, 0, combined, pendingSend.length, bytes.length);
         pendingSend = combined;
@@ -348,12 +358,20 @@ public final class TcpConnection {
         long flight = bytesInFlight();
         List<TcpSegment> due = retransmissions.due(nowNanos);
         if (!due.isEmpty()) {
+            metricRetransmissions += due.size();
+            metricRtoEvents++;
             if (states.state() == TcpState.SYN_SENT && ++synTransmissions > config.maximumSynTransmissions()) {
                 reset(); return List.of();
             }
             congestion.onTimeout(flight);
         }
         return due;
+    }
+
+    public synchronized MetricDeltas consumeMetricDeltas() {
+        MetricDeltas deltas = new MetricDeltas(metricRetransmissions, metricFastRetransmits, metricRtoEvents);
+        metricRetransmissions = metricFastRetransmits = metricRtoEvents = 0;
+        return deltas;
     }
 
     public synchronized boolean expireTimeWait(long nowNanos) {
@@ -437,16 +455,25 @@ public final class TcpConnection {
                          Duration minimumRto, Duration maximumRto, Duration timeWaitDuration,
                          Duration persistInitial, Duration persistMaximum, boolean windowScalingEnabled,
                          int localWindowScale, boolean timestampsEnabled, boolean sackEnabled,
-                         int maximumSynTransmissions) {
+                         int maximumSynTransmissions, int maximumPendingSendBytes) {
         public Config(int receiveCapacity, int localMss, int defaultPeerMss, Duration initialRto,
                       Duration minimumRto, Duration maximumRto, Duration timeWaitDuration) {
             this(receiveCapacity, localMss, defaultPeerMss, initialRto, minimumRto, maximumRto, timeWaitDuration,
                     Duration.ofSeconds(1), Duration.ofSeconds(60), false, 0, false, false, 6);
         }
+        public Config(int receiveCapacity, int localMss, int defaultPeerMss, Duration initialRto,
+                      Duration minimumRto, Duration maximumRto, Duration timeWaitDuration,
+                      Duration persistInitial, Duration persistMaximum, boolean windowScalingEnabled,
+                      int localWindowScale, boolean timestampsEnabled, boolean sackEnabled,
+                      int maximumSynTransmissions) {
+            this(receiveCapacity,localMss,defaultPeerMss,initialRto,minimumRto,maximumRto,timeWaitDuration,
+                    persistInitial,persistMaximum,windowScalingEnabled,localWindowScale,timestampsEnabled,
+                    sackEnabled,maximumSynTransmissions,DEFAULT_MAX_PENDING_SEND);
+        }
         public Config {
             if (receiveCapacity < 1 || receiveCapacity > 16 * 1024 * 1024 || localMss < 1 || localMss > 65_535 ||
                     defaultPeerMss < 1 || defaultPeerMss > 65_535) throw new IllegalArgumentException("invalid TCP buffer/MSS config");
-            if (localWindowScale < 0 || localWindowScale > 14 || maximumSynTransmissions < 1)
+            if (localWindowScale < 0 || localWindowScale > 14 || maximumSynTransmissions < 1 || maximumPendingSendBytes < 1)
                 throw new IllegalArgumentException("invalid TCP negotiation config");
             if (timeWaitDuration == null || timeWaitDuration.isNegative() || timeWaitDuration.isZero() ||
                     persistInitial == null || persistInitial.isNegative() || persistInitial.isZero() ||
@@ -463,4 +490,5 @@ public final class TcpConnection {
     public record ProcessingResult(List<TcpSegment> outbound, boolean justEstablished, boolean closed) {
         public ProcessingResult { outbound = List.copyOf(outbound); }
     }
+    public record MetricDeltas(long retransmissions, long fastRetransmits, long rtoEvents) {}
 }
