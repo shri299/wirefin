@@ -34,7 +34,19 @@ JNIEXPORT jint JNICALL Java_io_github_shri299_wirefin_device_DpdkDevice_nativeRe
     if (!h || !base || max_packets<1 || max_packets>256) return -1;
     struct rte_mbuf *packets[256]; uint16_t count=rte_eth_rx_burst(h->port,h->rxq,packets,(uint16_t)max_packets);
     jint lengths[256]; uint16_t kept=0;
-    for (uint16_t i=0;i<count;i++) { uint32_t length=rte_pktmbuf_pkt_len(packets[i]); if (length<=(uint32_t)stride && rte_pktmbuf_read(packets[i],0,length,base+(size_t)kept*stride)) lengths[kept++]=(jint)length; rte_pktmbuf_free(packets[i]); }
+    for (uint16_t i=0;i<count;i++) {
+        uint32_t length=rte_pktmbuf_pkt_len(packets[i]);
+        if (length<=(uint32_t)stride) {
+            void *destination=base+(size_t)kept*stride;
+            const void *source=rte_pktmbuf_read(packets[i],0,length,destination);
+            if (source) {
+                /* rte_pktmbuf_read returns the mbuf address for contiguous data. */
+                if (source!=destination) memcpy(destination,source,length);
+                lengths[kept++]=(jint)length;
+            }
+        }
+        rte_pktmbuf_free(packets[i]);
+    }
     (*env)->SetIntArrayRegion(env,sizes,0,kept,lengths); return kept;
 }
 
@@ -43,7 +55,13 @@ JNIEXPORT jint JNICALL Java_io_github_shri299_wirefin_device_DpdkDevice_nativeTr
     (void)cls; struct wf_handle *h=(struct wf_handle*)(uintptr_t)pointer; uint8_t *base=(*env)->GetDirectBufferAddress(env,arena);
     if (!h || !base || count<0 || count>256) return -1; jint lengths[256]; (*env)->GetIntArrayRegion(env,sizes,0,count,lengths);
     struct rte_mbuf *packets[256]; int prepared=0;
-    for (;prepared<count;prepared++) { packets[prepared]=rte_pktmbuf_alloc(h->pool); if (!packets[prepared]) break; void *target=rte_pktmbuf_append(packets[prepared],(uint16_t)lengths[prepared]); if (!target) { rte_pktmbuf_free(packets[prepared]); break; } memcpy(target,base+(size_t)prepared*stride,(size_t)lengths[prepared]); }
+    for (;prepared<count;prepared++) {
+        if (lengths[prepared]<0 || lengths[prepared]>stride || lengths[prepared]>UINT16_MAX) break;
+        packets[prepared]=rte_pktmbuf_alloc(h->pool); if (!packets[prepared]) break;
+        void *target=rte_pktmbuf_append(packets[prepared],(uint16_t)lengths[prepared]);
+        if (!target) { rte_pktmbuf_free(packets[prepared]); break; }
+        memcpy(target,base+(size_t)prepared*stride,(size_t)lengths[prepared]);
+    }
     uint16_t sent=rte_eth_tx_burst(h->port,h->txq,packets,(uint16_t)prepared); for (int i=sent;i<prepared;i++) rte_pktmbuf_free(packets[i]); return sent;
 }
 
