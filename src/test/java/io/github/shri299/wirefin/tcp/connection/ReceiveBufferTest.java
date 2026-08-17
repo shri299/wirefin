@@ -4,6 +4,15 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ReceiveBufferTest {
+    @Test void fillsAnAlreadyAdvertisedHoleAfterHigherOutOfOrderBytes() throws Exception {
+        ReceiveBuffer buffer = new ReceiveBuffer(100, 16);
+        buffer.accept(108, bytes("ijklmnop"));
+        buffer.accept(100, bytes("abcdefgh"));
+        byte[] delivered = new byte[16];
+        assertEquals(16, buffer.read(delivered, 0, delivered.length));
+        assertArrayEquals(bytes("abcdefghijklmnop"), delivered);
+    }
+
     @Test void normalizesDuplicatesLeftRightAndSpanningOverlaps() throws Exception {
         ReceiveBuffer buffer = new ReceiveBuffer(100, 16);
         buffer.accept(103, bytes("def"));
