@@ -7,6 +7,7 @@ import io.github.shri299.wirefin.runtime.TcpStack;
 import io.github.shri299.wirefin.socket.TcpListener;
 import io.github.shri299.wirefin.socket.TcpSocket;
 import io.github.shri299.wirefin.socket.UdpSocket;
+import io.github.shri299.wirefin.trace.*;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -29,7 +30,10 @@ public final class HttpServer {
         TunDevice device = new TunDevice(deviceName);
         var addresses = new java.util.ArrayList<io.github.shri299.wirefin.ip.IpAddress>(); addresses.add(address);
         if (address6Text != null) addresses.add(Ipv6Address.parse(address6Text));
-        try (TcpStack stack = new TcpStack(device, addresses); UdpSocket udp = stack.bindUdp(udpPort)) {
+        String pcapPath=option(args,"--pcap",null),tracePath=option(args,"--trace",null);
+        PacketCapture capture=pcapPath==null?PacketCapture.disabled():new PcapNgWriter(java.nio.file.Path.of(pcapPath));
+        ProtocolTracer tracer=tracePath==null?ProtocolTracer.disabled():new JsonLineProtocolTracer(java.nio.file.Path.of(tracePath));
+        try (TcpStack stack = new TcpStack(device, addresses,32,capture,tracer); UdpSocket udp = stack.bindUdp(udpPort)) {
             TcpListener listener = stack.listen(port);
             Thread.ofVirtual().name("wirefin-packet-loop").start(() -> {
                 try { stack.run(); }

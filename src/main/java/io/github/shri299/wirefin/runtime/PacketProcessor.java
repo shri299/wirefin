@@ -21,6 +21,7 @@ import io.github.shri299.wirefin.tcp.connection.TcpConnection;
 import io.github.shri299.wirefin.tcp.connection.TcpConnectionKey;
 import io.github.shri299.wirefin.tcp.connection.TcpConnectionTable;
 import io.github.shri299.wirefin.tcp.connection.TcpConnectionSnapshot;
+import io.github.shri299.wirefin.trace.*;
 import io.github.shri299.wirefin.tcp.reliability.SequenceNumber;
 import io.github.shri299.wirefin.tcp.state.TcpState;
 import io.github.shri299.wirefin.udp.UdpCodec;
@@ -58,6 +59,7 @@ public final class PacketProcessor {
     private final TcpConnection.Config connectionConfig;
     private final long cookieSecret;
     private final NetworkMetrics metrics;
+    private final ProtocolTracer tracer;
 
     public PacketProcessor(Ipv4Address localAddress) {
         this(localAddress, () -> ThreadLocalRandom.current().nextLong(1L << 32), ignored -> { });
@@ -78,6 +80,11 @@ public final class PacketProcessor {
     public PacketProcessor(Collection<? extends IpAddress> localAddresses, LongSupplier isnSource,
                            Consumer<byte[]> asynchronousOutput, LongSupplier nanoTime,
                            TcpConnection.Config connectionConfig, NetworkMetrics metrics) {
+        this(localAddresses,isnSource,asynchronousOutput,nanoTime,connectionConfig,metrics,ProtocolTracer.disabled());
+    }
+    public PacketProcessor(Collection<? extends IpAddress> localAddresses, LongSupplier isnSource,
+                           Consumer<byte[]> asynchronousOutput, LongSupplier nanoTime,
+                           TcpConnection.Config connectionConfig, NetworkMetrics metrics, ProtocolTracer tracer) {
         if (localAddresses == null || localAddresses.isEmpty()) throw new IllegalArgumentException("local address required");
         var map = new java.util.HashMap<Integer, IpAddress>();
         for (IpAddress address : localAddresses) {
@@ -87,6 +94,7 @@ public final class PacketProcessor {
         this.localAddresses = Map.copyOf(map); this.isnSource = isnSource; this.asynchronousOutput = asynchronousOutput;
         this.nanoTime = nanoTime; this.connectionConfig = connectionConfig;
         this.metrics = java.util.Objects.requireNonNull(metrics);
+        this.tracer = java.util.Objects.requireNonNull(tracer);
         this.cookieSecret = ThreadLocalRandom.current().nextLong();
         dispatcher.register(6, this::processTcp);
         dispatcher.register(17, this::processUdp);
@@ -188,7 +196,17 @@ public final class PacketProcessor {
             if (result.closed()) { connections.remove(key); if (listener != null) listener.remove(key); }
         }
         TcpConnectionKey responseKey = key;
+        if (tracer.enabled() && connection != null) {
+            trace(connection, tcp, PacketCapture.Direction.RX);
+            for (TcpSegment reply : replies) trace(connection, reply, PacketCapture.Direction.TX);
+        }
         return replies.stream().map(reply -> encode(reply, responseKey)).toList();
+    }
+
+    private void trace(TcpConnection connection, TcpSegment segment, PacketCapture.Direction direction) {
+        tracer.onSegment(new ProtocolTracer.TcpSegmentTrace(nanoTime.getAsLong(), direction, segment.flags(),
+                segment.sequenceNumber(), segment.acknowledgementNumber(), segment.payload().length,
+                connection.snapshot()));
     }
 
     private TcpSegment cookieSynAck(TcpConnectionKey key, TcpSegment syn) {
@@ -287,7 +305,10 @@ public final class PacketProcessor {
     public TcpConnectionTable connections() { return connections; }
     public void cancel(TcpConnection connection) { connections.remove(connection.key()); }
     public void transmit(TcpConnection connection, List<TcpSegment> segments) {
-        for (TcpSegment segment : segments) asynchronousOutput.accept(encode(segment, connection.key()));
+        for (TcpSegment segment : segments) {
+            if (tracer.enabled()) trace(connection,segment,PacketCapture.Direction.TX);
+            asynchronousOutput.accept(encode(segment, connection.key()));
+        }
     }
     public void pollRetransmissions(long nowNanos) {
         for (TcpConnection connection : connections.snapshot()) {
