@@ -37,6 +37,8 @@ class TcpConnectionDataTest {
         for (int i = 1; i < 3; i++) assertTrue(connection.receive(segment(501, 10_001, TcpFlags.ACK, new byte[0], 1000), 20 + i).outbound().isEmpty());
         assertEquals(sent.sequenceNumber(), connection.receive(segment(501, 10_001, TcpFlags.ACK, new byte[0], 1000), 23)
                 .outbound().getFirst().sequenceNumber());
+        assertEquals(new TcpConnection.MetricDeltas(1, 1, 0), connection.consumeMetricDeltas());
+        assertEquals(new TcpConnection.MetricDeltas(0, 0, 0), connection.consumeMetricDeltas());
     }
 
     @Test void duplicateSynRetransmitsSynAckAndInvalidHandshakeAckResets() {
@@ -127,6 +129,19 @@ class TcpConnectionDataTest {
         TcpSegment retransmitted = connection.retransmissionsDue(deadline).getFirst();
         assertEquals(fin.sequenceNumber(), retransmitted.sequenceNumber());
         assertTrue(retransmitted.has(TcpFlags.FIN));
+        assertEquals(new TcpConnection.MetricDeltas(1, 0, 1), connection.consumeMetricDeltas());
+    }
+
+    @Test void pendingSendBufferAppliesConnectionBackpressure() {
+        TcpSegment syn = new TcpSegment(50000,8080,500,0,TcpFlags.SYN,0,0,new byte[0],new byte[0]);
+        var base=config(32); var bounded=new TcpConnection.Config(base.receiveCapacity(),base.localMss(),base.defaultPeerMss(),
+                base.initialRto(),base.minimumRto(),base.maximumRto(),base.timeWaitDuration(),base.persistInitial(),
+                base.persistMaximum(),base.windowScalingEnabled(),base.localWindowScale(),base.timestampsEnabled(),
+                base.sackEnabled(),base.maximumSynTransmissions(),8);
+        TcpConnection connection=TcpConnection.passiveOpen(KEY,10_000,syn,0,bounded);
+        connection.receive(segment(501,10_001,TcpFlags.ACK,new byte[0],0),1);
+        connection.send(bytes("12345678"),2); assertEquals(8,connection.pendingSendBytes());
+        assertThrows(IllegalStateException.class,()->connection.send(bytes("9"),3));
     }
 
     private static TcpConnection established(int capacity, Integer mss, int window) {

@@ -46,7 +46,7 @@ public final class Ipv4Codec {
         out.putShort((short) ((packet.flags() << 13) | packet.fragmentOffset()));
         out.put((byte) packet.ttl()).put((byte) packet.protocol()).putShort((short) 0);
         out.putInt(packet.source().value()).putInt(packet.destination().value());
-        out.put(packet.options()).put(packet.payload());
+        packet.writeOptionsTo(out); packet.writePayloadTo(out);
         out.putShort(10, (short) InternetChecksum.compute(wire, 0, packet.headerLength(), 0));
         return wire;
     }

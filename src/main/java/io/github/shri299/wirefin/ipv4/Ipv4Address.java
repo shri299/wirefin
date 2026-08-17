@@ -24,6 +24,10 @@ public record Ipv4Address(int value) implements IpAddress {
     }
 
     @Override public int bitLength() { return 32; }
+    @Override public int unsignedByte(int index) {
+        if (index < 0 || index >= 4) throw new IndexOutOfBoundsException(index);
+        return value >>> (24 - index * 8) & 0xff;
+    }
 
     @Override public String toString() {
         return (value >>> 24 & 0xff) + "." + (value >>> 16 & 0xff) + "." +
