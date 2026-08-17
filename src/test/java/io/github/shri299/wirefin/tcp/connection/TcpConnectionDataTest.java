@@ -129,6 +129,18 @@ class TcpConnectionDataTest {
         assertTrue(retransmitted.has(TcpFlags.FIN));
     }
 
+    @Test void pendingSendBufferAppliesConnectionBackpressure() {
+        TcpSegment syn = new TcpSegment(50000,8080,500,0,TcpFlags.SYN,0,0,new byte[0],new byte[0]);
+        var base=config(32); var bounded=new TcpConnection.Config(base.receiveCapacity(),base.localMss(),base.defaultPeerMss(),
+                base.initialRto(),base.minimumRto(),base.maximumRto(),base.timeWaitDuration(),base.persistInitial(),
+                base.persistMaximum(),base.windowScalingEnabled(),base.localWindowScale(),base.timestampsEnabled(),
+                base.sackEnabled(),base.maximumSynTransmissions(),8);
+        TcpConnection connection=TcpConnection.passiveOpen(KEY,10_000,syn,0,bounded);
+        connection.receive(segment(501,10_001,TcpFlags.ACK,new byte[0],0),1);
+        connection.send(bytes("12345678"),2); assertEquals(8,connection.pendingSendBytes());
+        assertThrows(IllegalStateException.class,()->connection.send(bytes("9"),3));
+    }
+
     private static TcpConnection established(int capacity, Integer mss, int window) {
         byte[] options = mss == null ? new byte[0] : TcpOptions.mss(mss);
         TcpSegment syn = new TcpSegment(50000, 8080, 500, 0, TcpFlags.SYN, window, 0, options, new byte[0]);
