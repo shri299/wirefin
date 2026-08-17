@@ -2,9 +2,12 @@ package io.github.shri299.wirefin.view;
 
 import io.github.shri299.wirefin.ipv4.*;
 import io.github.shri299.wirefin.ipv6.*;
+import io.github.shri299.wirefin.memory.PacketMemory;
+import io.github.shri299.wirefin.tcp.*;
 import io.github.shri299.wirefin.udp.*;
 import org.junit.jupiter.api.Test;
 import java.nio.ByteBuffer;
+import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 class PacketViewTest {
@@ -20,5 +23,29 @@ class PacketViewTest {
         byte[] wire=Ipv6Codec.serialize(new Ipv6Packet(0,0,17,64,a,b,new byte[]{1}));
         var view=Ipv6PacketView.parse(ByteBuffer.wrap(wire),0,wire.length);assertEquals(a,view.source());assertEquals(1,view.payload().length());
         assertThrows(IllegalArgumentException.class,()->Ipv6PacketView.parse(ByteBuffer.wrap(wire),0,40));
+    }
+
+    @Test void ownedViewsKeepPacketStorageAliveUntilEverySliceCloses() {
+        Ipv4Address source=Ipv4Address.parse("192.0.2.1"),destination=Ipv4Address.parse("192.0.2.2");
+        byte[] udp=UdpCodec.serialize(new UdpDatagram(10,20,new byte[]{3,4}),source,destination);
+        byte[] wire=Ipv4Codec.serialize(new Ipv4Packet(0,1,2,0,64,17,source,destination,new byte[0],udp));
+        AtomicInteger releases=new AtomicInteger();
+        OwnedIpv4PacketView ip=OwnedIpv4PacketView.parse(PacketMemory.takeOwnership(
+                ByteBuffer.wrap(wire),0,wire.length,releases::incrementAndGet));
+        OwnedUdpDatagramView datagram=OwnedUdpDatagramView.parse(ip.payload(),source,destination);
+        OwnedPacketView payload=datagram.payload();
+        ip.close();datagram.close();assertEquals(0,releases.get());
+        assertEquals(3,payload.unsignedByte(0));payload.close();assertEquals(1,releases.get());
+    }
+
+    @Test void parsesTcpWithoutMaterializingPayload() {
+        Ipv4Address source=Ipv4Address.parse("198.51.100.1"),destination=Ipv4Address.parse("198.51.100.2");
+        byte[] wire=TcpCodec.serialize(new TcpSegment(123,456,7,8,TcpFlags.ACK,4096,0,
+                new byte[0],new byte[]{9}),source,destination);
+        OwnedPacketView packet=OwnedPacketView.takeOwnership(PacketMemory.takeOwnership(wire));
+        try(TcpSegmentView tcp=TcpSegmentView.parse(packet,source,destination)){
+            assertEquals(123,tcp.sourcePort());assertEquals(7,tcp.sequenceNumber());
+            try(OwnedPacketView payload=tcp.payload()){assertEquals(9,payload.unsignedByte(0));}
+        }
     }
 }
