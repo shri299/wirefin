@@ -45,3 +45,20 @@ NIC/hugepages. `benchmark-linux.sh` emits equivalent workload JSON, server
 metrics, GC/JVM environment, and CPU data for both backends on suitable hardware.
 Until that experiment is run, the only defensible comparison is architectural;
 there is no DPDK throughput, latency, CPU, or scalability claim.
+
+## Current limitations
+
+- The native DPDK shim was reviewed but could not be built or exercised on the
+  Apple host; it requires Linux, DPDK development libraries, hugepages, and a
+  dedicated bound NIC.
+- The DPDK compatibility path has one RX/TX queue pair and copies between mbufs,
+  direct arenas, Ethernet models, and the existing `byte[]` protocol core.
+- Direct-memory views cover fixed IPv4, IPv6, and UDP headers; they do not yet
+  provide end-to-end mbuf ownership to applications.
+- CPU affinity is an optional Linux `taskset` harness setting. Per-core event
+  loops, queues, buffer pools, flow hashing, and NUMA placement were not added
+  without multi-core measurements to justify their complexity.
+- `queueDepth` is a lightweight gauge for the most recently updated bounded
+  application queue, not an aggregate of every connection and socket queue.
+- Linux TUN interoperability remains the correctness reference, but this phase's
+  end-to-end TUN/DPDK measurements require a suitable Linux benchmark host.

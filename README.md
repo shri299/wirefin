@@ -383,21 +383,24 @@ SYN appears, verify `ip route get 10.0.0.2` selects `tun0`.
 
 ## Deliberately unsupported / incomplete
 
-- IPv6 extension headers/fragmentation, IPv4 fragment transmission, forwarding, PMTU discovery, multicast, and raw Ethernet
-- Neighbor discovery and ARP (not required by the layer-3 TUN topology); multi-link route output
+- IPv6 extension headers/fragmentation, IPv4 fragment transmission, forwarding, PMTU discovery, and multicast
+- Ethernet, ARP, and Neighbor Discovery codecs/cache are implemented for the optional DPDK path, but asynchronous
+  neighbor resolution and multi-link route output are not wired into packet transmission
 - Simultaneous open, TCP Fast Open, ECN, urgent data, Nagle, and keepalives
 - PAWS timestamp rejection, timestamp-derived RTT sampling, and full RFC 7323 behavior
 - RFC 6675 SACK loss recovery and complete RFC 6582 NewReno edge-case coverage
 - Full RFC 5961 reset processing and cryptographic/option-rich production SYN cookies
-- A dedicated bounded send buffer and blocking application backpressure
-- Blocking application backpressure when the in-memory send queue itself is bounded
-- Production hardening, security review, or high-performance buffer management
+- The bounded TCP send backlog rejects overflow rather than providing a blocking writable-notification API
+- Direct-memory header views are opt-in; the full connection path still materializes protocol objects
+- The DPDK backend has one queue pair and a static peer MAC; per-core queues, NUMA-aware pools, and mbuf-backed
+  application ownership remain future work
+- Production hardening, security review, and real-NIC DPDK validation
 
 ## Roadmap
 
 1. Add fault injection for loss, reordering, duplicate ACKs, zero-window recovery, and option combinations.
 2. Complete RFC 6675 SACK recovery, PAWS, and remaining NewReno edge cases.
-3. Bound the application send queue and add blocking backpressure semantics.
+3. Add blocking/writable-notification semantics to the bounded application send queue.
 4. Harden cookies/backlogs under adversarial load and add property-based/fuzz testing.
 5. Run an interoperability matrix across Linux kernel versions and harden IPv6 extension-header handling.
 
