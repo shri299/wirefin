@@ -228,6 +228,25 @@ src/main/java/io/github/shri299/wirefin/
 Tests mirror the main packages. `HttpFlowIntegrationTest` simulates the entire
 client packet conversation and exercises the public socket-like API.
 
+## Performance engineering
+
+Wirefin includes reproducible JMH/JFR and Linux end-to-end harnesses, bounded
+packet buffers/batches, lightweight runtime metrics, direct-memory header views,
+and an optional DPDK/JNI backend. See `docs/performance/METHODOLOGY.md`,
+`docs/performance/RESULTS_M1.md`, and `docs/performance/DPDK.md`. Results distinguish
+isolated JVM measurements from TUN/DPDK system measurements; no unmeasured DPDK
+performance claim is made.
+
+```mermaid
+flowchart LR
+  Before["packet byte[]"] -->|"copy IP payload"| IP["IP model"] -->|"copy transport payload"| TCP["TCP/UDP model"]
+  Arena["owned direct arena / future mbuf"] --> View["read-only IP view"] --> Transport["TCP/UDP view"]
+```
+
+The view path avoids payload materialization during header inspection. The default
+connection path still materializes immutable protocol models, and the JNI DPDK
+bridge performs one receive copy and one transmit copy.
+
 ## Build and test
 
 Requirements: JDK 21+ and Maven 3.9+.

@@ -48,4 +48,4 @@ JNIEXPORT jint JNICALL Java_io_github_shri299_wirefin_device_DpdkDevice_nativeTr
 }
 
 JNIEXPORT void JNICALL Java_io_github_shri299_wirefin_device_DpdkDevice_nativeClose
-  (JNIEnv *env,jclass cls,jlong pointer) { (void)env;(void)cls; struct wf_handle *h=(struct wf_handle*)(uintptr_t)pointer; if (!h) return; rte_eth_dev_stop(h->port); rte_eth_dev_close(h->port); free(h); }
+  (JNIEnv *env,jclass cls,jlong pointer) { (void)env;(void)cls; struct wf_handle *h=(struct wf_handle*)(uintptr_t)pointer; if (!h) return; rte_eth_dev_stop(h->port); rte_eth_dev_close(h->port); rte_mempool_free(h->pool); free(h); }

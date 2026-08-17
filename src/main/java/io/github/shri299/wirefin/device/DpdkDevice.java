@@ -4,6 +4,7 @@ import io.github.shri299.wirefin.link.*;
 import java.io.*;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Optional Linux/DPDK backend. JNI polls mbuf bursts into one reusable direct arena;
@@ -14,6 +15,7 @@ public final class DpdkDevice implements PacketDevice {
     private final long handle; private final int batchSize, frameSize; private final ByteBuffer rxArena, txArena;
     private final int[] lengths; private final ArrayDeque<byte[]> pending = new ArrayDeque<>();
     private final MacAddress localMac, peerMac;
+    private final AtomicBoolean closed = new AtomicBoolean();
 
     public DpdkDevice(Config config) throws IOException {
         if (!System.getProperty("os.name").toLowerCase().contains("linux")) throw new IOException("DPDK backend requires Linux");
@@ -55,14 +57,14 @@ public final class DpdkDevice implements PacketDevice {
         int sent = nativeTransmit(handle, txArena, frameSize, lengths, prepared);
         if (sent < 0) throw new IOException("DPDK TX burst failed: " + sent); return sent;
     }
-    @Override public void close() { nativeClose(handle); }
+    @Override public void close() { if (closed.compareAndSet(false, true)) nativeClose(handle); }
 
     public record Config(String[] ealArguments, int portId, int rxQueue, int txQueue, int rxDescriptors,
                          int txDescriptors, int mbufCount, int batchSize, int frameSize,
                          MacAddress localMac, MacAddress peerMac) {
         public Config {
             ealArguments = ealArguments.clone();
-            if (portId < 0 || rxQueue < 0 || txQueue < 0 || rxDescriptors < 64 || txDescriptors < 64 ||
+            if (portId < 0 || rxQueue != 0 || txQueue != 0 || rxDescriptors < 64 || txDescriptors < 64 ||
                     mbufCount < rxDescriptors + txDescriptors || batchSize < 1 || batchSize > 256 || frameSize < 64 ||
                     localMac == null || peerMac == null) throw new IllegalArgumentException("invalid DPDK configuration");
         }
