@@ -53,6 +53,7 @@ public final class TcpConnection {
     private long persistDeadline = Long.MAX_VALUE;
     private long persistIntervalNanos;
     private int synTransmissions = 1;
+    private long metricRetransmissions, metricFastRetransmits, metricRtoEvents;
 
     private TcpConnection(TcpConnectionKey key, long isn, TcpSegment peerSyn, long nowNanos, Config config,
                           boolean active) {
@@ -245,6 +246,8 @@ public final class TcpConnection {
                 if (duplicateAcks == 3) {
                     TcpSegment retransmit = retransmissions.fastRetransmit(nowNanos);
                     if (retransmit != null) {
+                        metricRetransmissions++;
+                        metricFastRetransmits++;
                         congestion.onFastRetransmit(bytesInFlight(), sendNext);
                         outbound.add(retransmit);
                     }
@@ -259,7 +262,11 @@ public final class TcpConnection {
             if (SequenceNumber.lessThan(acknowledgement, congestion.recoveryPoint())) {
                 congestion.onPartialAcknowledgement(result.newlyAcknowledgedBytes());
                 TcpSegment retransmit = retransmissions.fastRetransmit(nowNanos);
-                if (retransmit != null) outbound.add(retransmit);
+                if (retransmit != null) {
+                    metricRetransmissions++;
+                    metricFastRetransmits++;
+                    outbound.add(retransmit);
+                }
             } else congestion.onRecoveryComplete();
         } else if (states.state() != TcpState.SYN_RECEIVED && states.state() != TcpState.FIN_WAIT_1 &&
                 states.state() != TcpState.CLOSING && states.state() != TcpState.LAST_ACK)
@@ -351,12 +358,20 @@ public final class TcpConnection {
         long flight = bytesInFlight();
         List<TcpSegment> due = retransmissions.due(nowNanos);
         if (!due.isEmpty()) {
+            metricRetransmissions += due.size();
+            metricRtoEvents++;
             if (states.state() == TcpState.SYN_SENT && ++synTransmissions > config.maximumSynTransmissions()) {
                 reset(); return List.of();
             }
             congestion.onTimeout(flight);
         }
         return due;
+    }
+
+    public synchronized MetricDeltas consumeMetricDeltas() {
+        MetricDeltas deltas = new MetricDeltas(metricRetransmissions, metricFastRetransmits, metricRtoEvents);
+        metricRetransmissions = metricFastRetransmits = metricRtoEvents = 0;
+        return deltas;
     }
 
     public synchronized boolean expireTimeWait(long nowNanos) {
@@ -475,4 +490,5 @@ public final class TcpConnection {
     public record ProcessingResult(List<TcpSegment> outbound, boolean justEstablished, boolean closed) {
         public ProcessingResult { outbound = List.copyOf(outbound); }
     }
+    public record MetricDeltas(long retransmissions, long fastRetransmits, long rtoEvents) {}
 }

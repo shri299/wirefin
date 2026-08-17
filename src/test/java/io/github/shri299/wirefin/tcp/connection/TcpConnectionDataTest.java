@@ -37,6 +37,8 @@ class TcpConnectionDataTest {
         for (int i = 1; i < 3; i++) assertTrue(connection.receive(segment(501, 10_001, TcpFlags.ACK, new byte[0], 1000), 20 + i).outbound().isEmpty());
         assertEquals(sent.sequenceNumber(), connection.receive(segment(501, 10_001, TcpFlags.ACK, new byte[0], 1000), 23)
                 .outbound().getFirst().sequenceNumber());
+        assertEquals(new TcpConnection.MetricDeltas(1, 1, 0), connection.consumeMetricDeltas());
+        assertEquals(new TcpConnection.MetricDeltas(0, 0, 0), connection.consumeMetricDeltas());
     }
 
     @Test void duplicateSynRetransmitsSynAckAndInvalidHandshakeAckResets() {
@@ -127,6 +129,7 @@ class TcpConnectionDataTest {
         TcpSegment retransmitted = connection.retransmissionsDue(deadline).getFirst();
         assertEquals(fin.sequenceNumber(), retransmitted.sequenceNumber());
         assertTrue(retransmitted.has(TcpFlags.FIN));
+        assertEquals(new TcpConnection.MetricDeltas(1, 0, 1), connection.consumeMetricDeltas());
     }
 
     @Test void pendingSendBufferAppliesConnectionBackpressure() {

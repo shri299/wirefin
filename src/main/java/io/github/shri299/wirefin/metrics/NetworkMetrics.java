@@ -16,7 +16,9 @@ public final class NetworkMetrics {
     public void drop() { drops.increment(); }
     public void retransmissions(long count) { retransmissions.add(count); }
     public void fastRetransmit() { fastRetransmits.increment(); }
+    public void fastRetransmits(long count) { fastRetransmits.add(count); }
     public void rtoEvent() { rtoEvents.increment(); }
+    public void rtoEvents(long count) { rtoEvents.add(count); }
     public void activeConnections(long value) { activeConnections.set(value); }
     public void poolMiss() { poolMisses.increment(); }
     public void poolState(long inUse, long capacity) { poolInUse.set(inUse); poolCapacity.set(capacity); }

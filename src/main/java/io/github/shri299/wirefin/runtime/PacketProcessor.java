@@ -167,6 +167,7 @@ public final class PacketProcessor {
                 connection = connections.add(TcpConnection.passiveOpen(key, cookie, syntheticSyn,
                         nanoTime.getAsLong(), connectionConfig));
                 TcpConnection.ProcessingResult result = connection.receive(tcp, nanoTime.getAsLong());
+                recordMetrics(connection);
                 replies.addAll(result.outbound());
                 if (result.justEstablished() && !listener.promoteCookie(connection)) {
                     connections.remove(key);
@@ -176,6 +177,7 @@ public final class PacketProcessor {
             } else if (!tcp.has(TcpFlags.RST)) replies.add(resetFor(tcp));
         } else {
             TcpConnection.ProcessingResult result = connection.receive(tcp, nanoTime.getAsLong());
+            recordMetrics(connection);
             replies.addAll(result.outbound());
             if (result.justEstablished() && listener != null && !listener.promote(key, connection)) {
                 connections.remove(key);
@@ -289,7 +291,7 @@ public final class PacketProcessor {
     public void pollRetransmissions(long nowNanos) {
         for (TcpConnection connection : connections.snapshot()) {
             List<TcpSegment> due = connection.retransmissionsDue(nowNanos);
-            if (!due.isEmpty()) { metrics.retransmissions(due.size()); metrics.rtoEvent(); }
+            recordMetrics(connection);
             transmit(connection, due);
             if (connection.expireTimeWait(nowNanos) || connection.state() == TcpState.CLOSED) {
                 connections.remove(connection.key());
@@ -298,6 +300,12 @@ public final class PacketProcessor {
             }
         }
         metrics.activeConnections(connections.size());
+    }
+    private void recordMetrics(TcpConnection connection) {
+        TcpConnection.MetricDeltas deltas = connection.consumeMetricDeltas();
+        metrics.retransmissions(deltas.retransmissions());
+        metrics.fastRetransmits(deltas.fastRetransmits());
+        metrics.rtoEvents(deltas.rtoEvents());
     }
     public void accepted(TcpConnectionKey key) {
         ListenerState listener = listeners.get(key.localPort());
