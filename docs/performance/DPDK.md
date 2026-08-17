@@ -24,6 +24,11 @@ integrating mbuf lifetime with connection/application ownership remains future w
 
 Use a dedicated test NIC; binding it removes it from the normal kernel network
 stack and can disconnect the machine. Record the PCI address and existing driver.
+The repository scripts never select a NIC automatically. Every mutating operation
+requires an explicit full PCI BDF such as `0000:03:00.0`. `bind-vfio.sh` refuses a
+NIC that owns a default route unless the operator supplies
+`--force-default-route`; that override should be used only with verified
+out-of-band management.
 
 ```bash
 sudo apt-get update
@@ -37,6 +42,22 @@ sudo dpdk-devbind.py --status
 sudo ip link set dev eth1 down
 sudo dpdk-devbind.py --bind=vfio-pci 0000:03:00.0
 sudo dpdk-devbind.py --status
+```
+
+The safer scripted equivalent is:
+
+```bash
+# Read-only inventory: identify a dedicated data-plane NIC and its full PCI BDF.
+bash scripts/dpdk/discover.sh
+
+# Configure an explicit bounded number of 2 MiB pages. Use --node N on NUMA hosts.
+sudo bash scripts/dpdk/setup-hugepages.sh --pages 1024 --mount /mnt/huge
+
+# This refuses a default-route NIC and records its original driver under target/.
+sudo bash scripts/dpdk/bind-vfio.sh --bdf 0000:03:00.0
+
+# Validate driver, IOMMU group, hugepages, DPDK development files, and Java.
+bash scripts/dpdk/validate.sh --bdf 0000:03:00.0
 ```
 
 VFIO normally requires IOMMU support enabled in firmware and the kernel command
@@ -64,12 +85,33 @@ java -cp target/wirefin-0.1.0-SNAPSHOT-all.jar \
   --eal-args 'wirefin -l 1-2 --main-lcore 1 --socket-mem 1024'
 ```
 
+Or use the validated launcher (it still requires explicit topology values):
+
+```bash
+sudo -E env \
+  DPDK_BDF=0000:03:00.0 \
+  DPDK_LOCAL_MAC=02:00:00:00:00:02 \
+  DPDK_PEER_MAC=02:00:00:00:00:01 \
+  DPDK_EAL_ARGS='wirefin -l 1-2 --main-lcore 1 --socket-mem 1024' \
+  bash scripts/dpdk/launch-wirefin.sh
+```
+
 Restore the NIC after testing:
 
 ```bash
 sudo dpdk-devbind.py --bind=ixgbe 0000:03:00.0  # replace with the recorded driver
 sudo ip link set dev eth1 up
 ```
+
+When the scripted binder was used, restore the exact recorded driver with:
+
+```bash
+sudo bash scripts/dpdk/restore-nic.sh --bdf 0000:03:00.0
+```
+
+The restoration script deletes its state file only after a successful rebind. It
+brings previously recorded interfaces up but deliberately does not invent IP
+addresses or routes; the host network manager remains responsible for those.
 
 ## Reproduction and locality
 
