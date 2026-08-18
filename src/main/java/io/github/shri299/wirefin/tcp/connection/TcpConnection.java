@@ -56,7 +56,7 @@ public final class TcpConnection {
     private long persistDeadline = Long.MAX_VALUE;
     private long persistIntervalNanos;
     private int synTransmissions = 1;
-    private long metricRetransmissions, metricFastRetransmits, metricRtoEvents;
+    private long metricRetransmissions, metricFastRetransmits, metricRtoEvents, metricSackEvents, metricZeroWindowEvents;
     private long totalRetransmissions, totalFastRetransmits, totalRtoEvents;
     private long totalBytesSent, totalBytesReceived, sackEvents, zeroWindowEvents;
 
@@ -220,13 +220,14 @@ public final class TcpConnection {
         if (timestamps) options.timestamp().ifPresent(timestamp -> recentTimestamp = timestamp.value());
         if (sackPermitted && !options.sackBlocks().isEmpty()) {
             sackEvents++;
+            metricSackEvents++;
             retransmissions.updateSack(options.sackBlocks());
         }
     }
     private void updateRemoteWindow(TcpSegment incoming) {
         long previous = remoteWindow;
         remoteWindow = (long) incoming.windowSize() << (incoming.has(TcpFlags.SYN) ? 0 : peerWindowScale);
-        if (previous > 0 && remoteWindow == 0) zeroWindowEvents++;
+        if (previous > 0 && remoteWindow == 0) { zeroWindowEvents++; metricZeroWindowEvents++; }
         if (remoteWindow > 0) { persistDeadline = Long.MAX_VALUE; persistIntervalNanos = config.persistInitial().toNanos(); }
     }
 
@@ -386,8 +387,9 @@ public final class TcpConnection {
     }
 
     public synchronized MetricDeltas consumeMetricDeltas() {
-        MetricDeltas deltas = new MetricDeltas(metricRetransmissions, metricFastRetransmits, metricRtoEvents);
-        metricRetransmissions = metricFastRetransmits = metricRtoEvents = 0;
+        MetricDeltas deltas = new MetricDeltas(metricRetransmissions, metricFastRetransmits, metricRtoEvents,
+                metricSackEvents,metricZeroWindowEvents);
+        metricRetransmissions = metricFastRetransmits = metricRtoEvents = metricSackEvents = metricZeroWindowEvents = 0;
         return deltas;
     }
 
@@ -517,5 +519,6 @@ public final class TcpConnection {
     public record ProcessingResult(List<TcpSegment> outbound, boolean justEstablished, boolean closed) {
         public ProcessingResult { outbound = List.copyOf(outbound); }
     }
-    public record MetricDeltas(long retransmissions, long fastRetransmits, long rtoEvents) {}
+    public record MetricDeltas(long retransmissions, long fastRetransmits, long rtoEvents,
+                               long sackEvents,long zeroWindowEvents) {}
 }

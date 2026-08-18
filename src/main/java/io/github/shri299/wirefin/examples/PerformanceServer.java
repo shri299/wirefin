@@ -28,14 +28,15 @@ public final class PerformanceServer {
         String pcap=option(args,"--pcap",null),trace=option(args,"--trace",null);
         PacketCapture capture=pcap==null?PacketCapture.disabled():new PcapNgWriter(java.nio.file.Path.of(pcap));
         ProtocolTracer tracer=trace==null?ProtocolTracer.disabled():new JsonLineProtocolTracer(java.nio.file.Path.of(trace));
-        TcpStack stack=new TcpStack(device,addresses,batch,capture,tracer); var listener=stack.listen(tcpPort,4096,true); var udp=stack.bindUdp(udpPort);
+        boolean detailedMetrics=Boolean.parseBoolean(option(args,"--detailed-metrics","true"));
+        TcpStack stack=new TcpStack(device,addresses,batch,capture,tracer,detailedMetrics); var listener=stack.listen(tcpPort,4096,true); var udp=stack.bindUdp(udpPort);
         Thread loop=Thread.ofPlatform().name("wirefin-event-loop").start(()->{try{stack.run();}catch(Exception failure){String message=failure.getMessage();if(message==null||!message.contains("closed"))failure.printStackTrace();}});
         Thread.ofVirtual().start(()->{while(true)try{var socket=listener.accept();Thread.ofVirtual().start(()->{try(socket){byte[] block=new byte[64*1024];int count;while((count=socket.read(block))>=0)appBytes.add(count);}catch(Exception ignored){}});}catch(Exception stopped){return;}});
         Thread.ofVirtual().start(()->{while(true)try{var datagram=udp.receive(Duration.ofSeconds(seconds+5L));appBytes.add(datagram.payload().length);udp.sendTo(datagram.sourceAddress(),datagram.sourcePort(),datagram.payload());}catch(Exception stopped){return;}});
         System.out.printf("Wirefin performance server ready backend=%s tcp=%d udp=%d batch=%d%n",backend,tcpPort,udpPort,batch);
         Thread.sleep(Duration.ofSeconds(seconds)); var snapshot=stack.metrics(); stack.close(); loop.join(Duration.ofSeconds(2));
-        System.out.printf(Locale.ROOT,"{\"backend\":\"%s\",\"duration_seconds\":%d,\"application_bytes\":%d,\"rx_packets\":%d,\"tx_packets\":%d,\"rx_bytes\":%d,\"tx_bytes\":%d,\"drops\":%d,\"retransmissions\":%d,\"rto_events\":%d,\"average_batch_size\":%.3f}%n",
-                backend,seconds,appBytes.sum(),snapshot.rxPackets(),snapshot.txPackets(),snapshot.rxBytes(),snapshot.txBytes(),snapshot.drops(),snapshot.retransmissions(),snapshot.rtoEvents(),snapshot.averageBatchSize());
+        System.out.printf(Locale.ROOT,"{\"backend\":\"%s\",\"duration_seconds\":%d,\"application_bytes\":%d,\"rx_packets\":%d,\"tx_packets\":%d,\"rx_bytes\":%d,\"tx_bytes\":%d,\"drops\":%d,\"retransmissions\":%d,\"fast_retransmits\":%d,\"rto_events\":%d,\"connections_opened\":%d,\"connections_closed\":%d,\"malformed_packets\":%d,\"checksum_failures\":%d,\"resource_rejections\":%d,\"average_batch_size\":%.3f,\"packets_per_second\":%.3f,\"gigabits_per_second\":%.6f}%n",
+                backend,seconds,appBytes.sum(),snapshot.rxPackets(),snapshot.txPackets(),snapshot.rxBytes(),snapshot.txBytes(),snapshot.drops(),snapshot.retransmissions(),snapshot.fastRetransmits(),snapshot.rtoEvents(),snapshot.connectionsOpened(),snapshot.connectionsClosed(),snapshot.malformedPackets(),snapshot.checksumFailures(),snapshot.resourceRejections(),snapshot.averageBatchSize(),snapshot.packetsPerSecond(),snapshot.gigabitsPerSecond());
     }
     private static String option(String[] args,String name,String fallback){for(int i=0;i+1<args.length;i++)if(args[i].equals(name))return args[i+1];return fallback;}
     private static String required(String[] args,String name){String value=option(args,name,null);if(value==null)throw new IllegalArgumentException("missing "+name);return value;}
