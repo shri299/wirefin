@@ -2,6 +2,7 @@ package io.github.shri299.wirefin.tcp.congestion;
 
 public interface CongestionController {
     void onAcknowledgement(int newlyAcknowledgedBytes);
+    default void onAcknowledgement(int newlyAcknowledgedBytes, long nowNanos) { onAcknowledgement(newlyAcknowledgedBytes); }
     void onTimeout(long bytesInFlight);
     void onFastRetransmit(long bytesInFlight);
     default void onFastRetransmit(long bytesInFlight, long recoveryPoint) { onFastRetransmit(bytesInFlight); }

@@ -3,8 +3,8 @@ package io.github.shri299.wirefin.tcp.connection;
 import io.github.shri299.wirefin.tcp.TcpFlags;
 import io.github.shri299.wirefin.tcp.TcpOptions;
 import io.github.shri299.wirefin.tcp.TcpSegment;
-import io.github.shri299.wirefin.tcp.congestion.BasicCongestionController;
 import io.github.shri299.wirefin.tcp.congestion.CongestionController;
+import io.github.shri299.wirefin.tcp.congestion.CongestionControlAlgorithm;
 import io.github.shri299.wirefin.tcp.reliability.RetransmissionManager;
 import io.github.shri299.wirefin.tcp.reliability.RtoEstimator;
 import io.github.shri299.wirefin.tcp.reliability.SequenceNumber;
@@ -86,7 +86,7 @@ public final class TcpConnection {
             transition(TcpEvent.RECEIVE_SYN);
             retransmissions.track(synAck(), nowNanos);
         }
-        this.congestion = new BasicCongestionController(sendMss);
+        this.congestion = config.congestionControl().create(sendMss);
     }
 
     public static TcpConnection passiveOpen(TcpConnectionKey key, long isn, TcpSegment syn) {
@@ -285,7 +285,7 @@ public final class TcpConnection {
             } else congestion.onRecoveryComplete();
         } else if (states.state() != TcpState.SYN_RECEIVED && states.state() != TcpState.FIN_WAIT_1 &&
                 states.state() != TcpState.CLOSING && states.state() != TcpState.LAST_ACK)
-            congestion.onAcknowledgement(result.newlyAcknowledgedBytes());
+            congestion.onAcknowledgement(result.newlyAcknowledgedBytes(), nowNanos);
         if (sendUnacknowledged == sendNext) {
             switch (states.state()) {
                 case FIN_WAIT_1 -> transition(TcpEvent.RECEIVE_ACK_OF_FIN);
@@ -484,7 +484,8 @@ public final class TcpConnection {
                          Duration minimumRto, Duration maximumRto, Duration timeWaitDuration,
                          Duration persistInitial, Duration persistMaximum, boolean windowScalingEnabled,
                          int localWindowScale, boolean timestampsEnabled, boolean sackEnabled,
-                         int maximumSynTransmissions, int maximumPendingSendBytes) {
+                         int maximumSynTransmissions, int maximumPendingSendBytes,
+                         CongestionControlAlgorithm congestionControl) {
         public Config(int receiveCapacity, int localMss, int defaultPeerMss, Duration initialRto,
                       Duration minimumRto, Duration maximumRto, Duration timeWaitDuration) {
             this(receiveCapacity, localMss, defaultPeerMss, initialRto, minimumRto, maximumRto, timeWaitDuration,
@@ -499,11 +500,21 @@ public final class TcpConnection {
                     persistInitial,persistMaximum,windowScalingEnabled,localWindowScale,timestampsEnabled,
                     sackEnabled,maximumSynTransmissions,DEFAULT_MAX_PENDING_SEND);
         }
+        public Config(int receiveCapacity, int localMss, int defaultPeerMss, Duration initialRto,
+                      Duration minimumRto, Duration maximumRto, Duration timeWaitDuration,
+                      Duration persistInitial, Duration persistMaximum, boolean windowScalingEnabled,
+                      int localWindowScale, boolean timestampsEnabled, boolean sackEnabled,
+                      int maximumSynTransmissions, int maximumPendingSendBytes) {
+            this(receiveCapacity,localMss,defaultPeerMss,initialRto,minimumRto,maximumRto,timeWaitDuration,
+                    persistInitial,persistMaximum,windowScalingEnabled,localWindowScale,timestampsEnabled,
+                    sackEnabled,maximumSynTransmissions,maximumPendingSendBytes,CongestionControlAlgorithm.RENO);
+        }
         public Config {
             if (receiveCapacity < 1 || receiveCapacity > 16 * 1024 * 1024 || localMss < 1 || localMss > 65_535 ||
                     defaultPeerMss < 1 || defaultPeerMss > 65_535) throw new IllegalArgumentException("invalid TCP buffer/MSS config");
             if (localWindowScale < 0 || localWindowScale > 14 || maximumSynTransmissions < 1 || maximumPendingSendBytes < 1)
                 throw new IllegalArgumentException("invalid TCP negotiation config");
+            if (congestionControl == null) throw new IllegalArgumentException("congestion control required");
             if (timeWaitDuration == null || timeWaitDuration.isNegative() || timeWaitDuration.isZero() ||
                     persistInitial == null || persistInitial.isNegative() || persistInitial.isZero() ||
                     persistMaximum == null || persistMaximum.compareTo(persistInitial) < 0)
@@ -513,6 +524,11 @@ public final class TcpConnection {
             return new Config(DEFAULT_RECEIVE_WINDOW, DEFAULT_MSS, 536, Duration.ofSeconds(1),
                     Duration.ofSeconds(1), Duration.ofSeconds(60), Duration.ofSeconds(60),
                     Duration.ofSeconds(1), Duration.ofSeconds(60), true, 0, true, true, 6);
+        }
+        public Config withCongestionControl(CongestionControlAlgorithm algorithm) {
+            return new Config(receiveCapacity,localMss,defaultPeerMss,initialRto,minimumRto,maximumRto,timeWaitDuration,
+                    persistInitial,persistMaximum,windowScalingEnabled,localWindowScale,timestampsEnabled,sackEnabled,
+                    maximumSynTransmissions,maximumPendingSendBytes,algorithm);
         }
     }
 

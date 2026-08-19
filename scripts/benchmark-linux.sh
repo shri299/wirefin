@@ -10,6 +10,7 @@ BACKEND="${WIREFIN_BACKEND:-tun}"
 RESULT_DIR="${1:-target/linux-benchmark}"
 DURATION="${WIREFIN_DURATION:-10}"
 BATCH="${WIREFIN_BATCH:-32}"
+CONGESTION_CONTROL="${WIREFIN_CONGESTION_CONTROL:-reno}"
 FLOWS="${WIREFIN_FLOWS:-1 10 100}"
 TUN="${WIREFIN_TUN:-wf-perf0}"
 HOST="${WIREFIN_HOST:-10.77.0.1}"
@@ -54,7 +55,7 @@ if [[ "$BACKEND" == tun ]]; then
   sudo ip link set "$TUN" up
 fi
 
-SERVER_ARGS=(--backend "$BACKEND" --address "$STACK" --address6 "$STACK6" --tcp-port "$TCP_PORT" --udp-port "$UDP_PORT" --batch "$BATCH")
+SERVER_ARGS=(--backend "$BACKEND" --address "$STACK" --address6 "$STACK6" --tcp-port "$TCP_PORT" --udp-port "$UDP_PORT" --batch "$BATCH" --congestion-control "$CONGESTION_CONTROL")
 if [[ "$BACKEND" == tun ]]; then
   SERVER_ARGS+=(--tun "$TUN")
 else

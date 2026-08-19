@@ -25,7 +25,8 @@ The script refuses to reuse an existing TUN name and removes only the TUN,
 qdisc, veth pair, and namespaces it created. Set `WIREFIN_REFERENCE=false` to
 skip the kernel comparison. Supported scenarios are clean, 0.1/1/5 percent
 loss, 10/50/100 ms nominal RTT, jitter, duplication, reordering, and a 1 Mbit/s
-rate limit.
+rate limit. Set `WIREFIN_CONGESTION_CONTROL=reno` (the default) or `cubic` to
+compare strategies; preserve separate result directories.
 
 Each Wirefin directory contains:
 
@@ -51,3 +52,13 @@ fast-retransmit demonstration. Zero-window behavior remains covered by
 deterministic protocol tests rather than this HTTP lab. The scripts have been
 syntax-checked on non-Linux development machines, but successful results must be
 recorded on Linux before claiming a scenario passed.
+
+For a compact demonstration that runs the 5% loss scenario and prints selected
+state/cwnd/RTO/retransmission transitions afterward:
+
+```bash
+./scripts/demo-linux.sh target/wirefin-demo
+```
+
+This intentionally reports when the randomized short flow did not actually lose
+a segment. It never presents configured loss as observed TCP recovery.

@@ -4,6 +4,8 @@ import io.github.shri299.wirefin.device.TunDevice;
 import io.github.shri299.wirefin.ipv4.Ipv4Address;
 import io.github.shri299.wirefin.ipv6.Ipv6Address;
 import io.github.shri299.wirefin.runtime.TcpStack;
+import io.github.shri299.wirefin.tcp.congestion.CongestionControlAlgorithm;
+import io.github.shri299.wirefin.tcp.connection.TcpConnection;
 import io.github.shri299.wirefin.socket.TcpListener;
 import io.github.shri299.wirefin.socket.TcpSocket;
 import io.github.shri299.wirefin.socket.UdpSocket;
@@ -33,7 +35,9 @@ public final class HttpServer {
         String pcapPath=option(args,"--pcap",null),tracePath=option(args,"--trace",null);
         PacketCapture capture=pcapPath==null?PacketCapture.disabled():new PcapNgWriter(java.nio.file.Path.of(pcapPath));
         ProtocolTracer tracer=tracePath==null?ProtocolTracer.disabled():new JsonLineProtocolTracer(java.nio.file.Path.of(tracePath));
-        try (TcpStack stack = new TcpStack(device, addresses,32,capture,tracer); UdpSocket udp = stack.bindUdp(udpPort)) {
+        var congestion=CongestionControlAlgorithm.parse(option(args,"--congestion-control","reno"));
+        var connectionConfig=TcpConnection.Config.defaults().withCongestionControl(congestion);
+        try (TcpStack stack = new TcpStack(device, addresses,32,capture,tracer,false,connectionConfig); UdpSocket udp = stack.bindUdp(udpPort)) {
             TcpListener listener = stack.listen(port);
             Thread.ofVirtual().name("wirefin-packet-loop").start(() -> {
                 try { stack.run(); }
@@ -45,8 +49,8 @@ public final class HttpServer {
                     udp.sendTo(datagram.sourceAddress(), datagram.sourcePort(), datagram.payload());
                 } catch (Exception stopped) { return; }
             });
-            System.out.printf("Wirefin listening on TCP %s:%d and UDP echo port %d%s via %s%n", address, port,
-                    udpPort, address6Text == null ? "" : " (IPv6 " + address6Text + ")", device.name());
+            System.out.printf("Wirefin listening on TCP %s:%d and UDP echo port %d%s via %s congestion=%s%n", address, port,
+                    udpPort, address6Text == null ? "" : " (IPv6 " + address6Text + ")", device.name(),congestion.name().toLowerCase());
             while (true) {
                 TcpSocket socket = listener.accept();
                 Thread.ofVirtual().name("wirefin-http").start(() -> serve(socket));

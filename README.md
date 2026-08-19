@@ -54,6 +54,9 @@ know about TUN, root privileges, or kernel sockets, which makes real protocol
 paths deterministic in tests. `NetworkStack` is the public dual-stack facade;
 `TcpStack` remains as a compatibility runtime for existing users.
 
+For the full data flow, ownership rules, control block, backend boundaries, and
+future multi-core constraints, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
 ## Protocol support matrix
 
 | Layer | IPv4 | IPv6 | Notes |
@@ -68,6 +71,10 @@ paths deterministic in tests. `NetworkStack` is the public dual-stack facade;
 | TCP active open | yes | yes | deterministic tests cover generic addressing; Linux active-open currently uses IPv4 |
 | Neighbor discovery / ARP | n/a | not needed | TUN is layer 3; the direct-route harness has no Ethernet neighbors |
 | IPv6 extension headers, PMTU, forwarding | no | no | explicitly out of scope |
+
+The evidence-qualified matrix—implemented vs partial, unit vs Linux, and the
+currently unverified DPDK column—is maintained in
+[`docs/PROTOCOL_SUPPORT.md`](docs/PROTOCOL_SUPPORT.md).
 
 ## IPv4 and IPv6 boundaries
 
@@ -170,6 +177,10 @@ the oldest outstanding segment and partial ACKs trim its payload. The basic
 RFC 5681-inspired controller implements slow start, additive increase, timeout
 collapse, and the NewReno-style recovery behavior described above. Timeout loss
 always exits fast recovery and remains separate from duplicate-ACK loss handling.
+An optional educational CUBIC strategy adds time-based cubic window growth and a
+0.7 multiplicative decrease while reusing those recovery mechanics. Select it
+with `--congestion-control cubic`; Reno remains the default. This is not a claim
+of Linux-equivalent CUBIC or complete RFC 9438 behavior.
 
 ### Connection teardown
 
@@ -233,7 +244,8 @@ client packet conversation and exercises the public socket-like API.
 Wirefin includes reproducible JMH/JFR and Linux end-to-end harnesses, bounded
 packet buffers/batches, lightweight runtime metrics, direct-memory header views,
 and an optional DPDK/JNI backend. See `docs/performance/METHODOLOGY.md`,
-`docs/performance/RESULTS_M1.md`, and `docs/performance/DPDK.md`. Results distinguish
+`docs/performance/RESULTS_M1.md`, `docs/performance/TIMER_RESULTS.md`, and
+`docs/performance/DPDK.md`. Results distinguish
 isolated JVM measurements from TUN/DPDK system measurements; no unmeasured DPDK
 performance claim is made.
 

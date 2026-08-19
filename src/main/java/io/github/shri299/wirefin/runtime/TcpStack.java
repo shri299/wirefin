@@ -57,6 +57,13 @@ public final class TcpStack implements AutoCloseable {
 
     public TcpStack(PacketDevice device, java.util.Collection<? extends IpAddress> localAddresses, int batchSize,
                     PacketCapture capture, ProtocolTracer tracer, boolean detailedProtocolMetrics) {
+        this(device,localAddresses,batchSize,capture,tracer,detailedProtocolMetrics,
+                io.github.shri299.wirefin.tcp.connection.TcpConnection.Config.defaults());
+    }
+
+    public TcpStack(PacketDevice device, java.util.Collection<? extends IpAddress> localAddresses, int batchSize,
+                    PacketCapture capture, ProtocolTracer tracer, boolean detailedProtocolMetrics,
+                    io.github.shri299.wirefin.tcp.connection.TcpConnection.Config connectionConfig) {
         if (batchSize < 1 || batchSize > 4096) throw new IllegalArgumentException("invalid batch size");
         this.device = device;
         this.batchSize = batchSize;
@@ -65,7 +72,7 @@ public final class TcpStack implements AutoCloseable {
         this.metrics = new NetworkMetrics(detailedProtocolMetrics);
         this.processor = new PacketProcessor(localAddresses,
                 () -> java.util.concurrent.ThreadLocalRandom.current().nextLong(1L << 32), this::writeUnchecked,
-                System::nanoTime, io.github.shri299.wirefin.tcp.connection.TcpConnection.Config.defaults(), metrics,tracer);
+                System::nanoTime, java.util.Objects.requireNonNull(connectionConfig), metrics,tracer);
     }
 
     public TcpListener listen(int port) { return new TcpListener(processor, port); }

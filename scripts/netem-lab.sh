@@ -12,6 +12,7 @@ TUN="${WIREFIN_TUN:-wf-netem0}"
 HOST="${WIREFIN_HOST:-10.78.0.1}"
 STACK="${WIREFIN_STACK:-10.78.0.2}"
 PORT="${WIREFIN_PORT:-18080}"
+CONGESTION_CONTROL="${WIREFIN_CONGESTION_CONTROL:-reno}"
 REFERENCE="${WIREFIN_REFERENCE:-true}"
 RUN_ID="$$"
 CLIENT_NS="wf-c-${RUN_ID}"
@@ -77,7 +78,8 @@ run_wirefin() {
   mkdir -p "$output"
   sudo tc qdisc replace dev "$TUN" root netem $rule
   java -jar target/wirefin-0.1.0-SNAPSHOT-all.jar --tun "$TUN" --address "$STACK" --port "$PORT" \
-    --pcap "$output/session.pcapng" --trace "$output/trace.jsonl" >"$output/server.log" 2>&1 &
+    --congestion-control "$CONGESTION_CONTROL" --pcap "$output/session.pcapng" \
+    --trace "$output/trace.jsonl" >"$output/server.log" 2>&1 &
   SERVER_PID=$!
   for _ in {1..100}; do
     grep -q "Wirefin listening" "$output/server.log" && break
