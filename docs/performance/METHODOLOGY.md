@@ -62,6 +62,19 @@ p99 increases over 10%. The command reports but exits successfully unless
 `--fail` is deliberately selected. End-to-end variance must be characterized on
 the benchmark host before using that option in CI.
 
+Timer scalability is measured separately at 1k, 10k, and 100k synthetic active
+connections:
+
+```bash
+./scripts/benchmark-timers.sh target/timer-benchmark
+```
+
+This measures the current linear not-due timer poll, including each control
+block's synchronized timer check. It does not simulate packet work or claim a
+production flow capacity. A hashed timing wheel remains intentionally
+unimplemented until same-host results show that this scan is material to the
+target workload.
+
 Never compare results from different hosts as a before/after percentage. Never
 describe a path as zero-copy unless buffer ownership and every remaining copy are
 identified.

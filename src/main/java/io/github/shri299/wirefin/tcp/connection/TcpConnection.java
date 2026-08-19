@@ -339,7 +339,7 @@ public final class TcpConnection {
         if (persistDeadline == Long.MAX_VALUE) persistDeadline = nowNanos + persistIntervalNanos;
     }
     private TcpSegment persistProbe(long nowNanos) {
-        if (remoteWindow != 0 || bytesInFlight() != 0 || pendingSend.length == 0 || nowNanos < persistDeadline) return null;
+        if (remoteWindow != 0 || pendingSend.length == 0 || nowNanos < persistDeadline || bytesInFlight() != 0) return null;
         TcpSegment probe = segment(sendNext, receiveNext(), TcpFlags.ACK, establishedOptions(),
                 new byte[] {pendingSend[0]});
         persistIntervalNanos = Math.min(config.persistMaximum().toNanos(), persistIntervalNanos * 2);
@@ -371,9 +371,9 @@ public final class TcpConnection {
         lastNowNanos = nowNanos;
         TcpSegment probe = persistProbe(nowNanos);
         if (probe != null) return List.of(probe);
-        long flight = bytesInFlight();
         List<TcpSegment> due = retransmissions.due(nowNanos);
         if (!due.isEmpty()) {
+            long flight = bytesInFlight();
             metricRetransmissions += due.size();
             metricRtoEvents++;
             totalRetransmissions += due.size();
