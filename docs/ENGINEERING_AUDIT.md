@@ -95,3 +95,29 @@ reasonable for the measured scale; they are not a multi-core ownership model.
 
 No P2 throughput or locality claim is valid until raw results, machine metadata,
 and reproduction commands are committed from a suitable host.
+
+## Progress on this branch
+
+The classification above records the starting point. This branch subsequently
+completed the following P0/P1 tranches:
+
+- safe explicit-BDF DPDK discovery, hugepage, VFIO bind/validate/launch/restore;
+- reference-counted `PacketMemory`, owned slices, and owned Ethernet/IP/TCP/UDP
+  views, without regressing the borrowed view path;
+- generated codec/reassembly/sequence properties, deterministic parser fuzzing,
+  connection/fragment exhaustion tests, and a receive-window bug fix found by
+  those properties;
+- immutable TCB snapshots, opt-in JSONL protocol tracing, direct PCAPNG export,
+  expanded opt-in metrics, and a bounded connection table;
+- Linux netem plus isolated Linux-TCP reference workflows and a compact demo;
+- 1/10/100-flow end-to-end matrix tooling, host/generator metadata, graph-ready
+  CSV, and an advisory baseline comparator;
+- measured 1k/10k/100k idle timer scans and removal of their common-path
+  allocation. The evidence did not justify a timing wheel yet;
+- selectable Reno-style and educational time-aware CUBIC strategies, explicitly
+  without Linux-equivalence claims;
+- an architecture guide and evidence-qualified protocol matrix.
+
+Real mbuf ownership, removal of DPDK materialization, multi-queue workers, RSS,
+NUMA-local placement, and actual TUN-vs-DPDK/multi-core results remain
+open. They are not described as implemented anywhere in the project.

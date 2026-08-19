@@ -17,8 +17,10 @@ flowchart TD
 The current JNI compatibility boundary polls mbufs into a reusable direct arena,
 then copies each frame once into the existing `byte[]` protocol core. TX builds an
 Ethernet frame and copies it into an mbuf. It is therefore **copy-reduced and
-batched, not zero-copy**. `PacketView` demonstrates a no-payload-copy header path;
-integrating mbuf lifetime with connection/application ownership remains future work.
+batched, not zero-copy**. `PacketMemory` and owned header views now establish
+checked shared lifetime for heap/direct/external storage, but JNI does not yet
+wrap a live mbuf with that owner. Integrating native release and eliminating
+protocol materialization therefore remain future work.
 
 ## Ubuntu setup
 
