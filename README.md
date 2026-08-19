@@ -227,7 +227,7 @@ src/main/java/io/github/shri299/wirefin/
 ├── icmp/         ICMPv4 and ICMPv6 message codec
 ├── routing/      family-safe longest-prefix route table
 ├── tcp/          TCP model, flags, codec
-│   ├── congestion/   controller interface and basic RFC 5681-inspired AIMD
+│   ├── congestion/   Reno-style and educational CUBIC strategies
 │   ├── connection/   four-tuple, table, TCP control block
 │   ├── reliability/  sequence arithmetic and retransmission tracking
 │   └── state/        explicit states, events, transitions
@@ -258,6 +258,21 @@ flowchart LR
 The view path avoids payload materialization during header inspection. The default
 connection path still materializes immutable protocol models, and the JNI DPDK
 bridge performs one receive copy and one transmit copy.
+
+## Diagnostics and impairment lab
+
+The example servers accept `--trace trace.jsonl` for structured per-segment TCB
+events, `--pcap session.pcapng` for direction-tagged raw-IP capture, and
+`--congestion-control reno|cubic`. `TcpStack.connections()` exposes immutable
+active-connection snapshots containing state, sequence variables, cwnd/ssthresh,
+peer window, RTT/RTO, recovery counters, SACK state, bytes, and queue depths.
+
+On Linux, `scripts/netem-lab.sh` applies named loss, delay, jitter, duplication,
+reordering, and bandwidth scenarios to both Wirefin and an isolated Linux TCP
+reference. `scripts/demo-linux.sh` runs the 5% loss workflow and prints observed
+state/cwnd/RTO/retransmission transitions without treating configured loss as
+proof that a segment was actually lost. See `docs/NETEM_LAB.md` for commands and
+evidence boundaries.
 
 ## Build and test
 
@@ -410,11 +425,11 @@ SYN appears, verify `ip route get 10.0.0.2` selects `tun0`.
 
 ## Roadmap
 
-1. Add fault injection for loss, reordering, duplicate ACKs, zero-window recovery, and option combinations.
-2. Complete RFC 6675 SACK recovery, PAWS, and remaining NewReno edge cases.
-3. Add blocking/writable-notification semantics to the bounded application send queue.
-4. Harden cookies/backlogs under adversarial load and add property-based/fuzz testing.
-5. Run an interoperability matrix across Linux kernel versions and harden IPv6 extension-header handling.
+1. Capture and publish matched TUN/DPDK results on suitable Linux NIC hardware; do not extrapolate from JVM tests.
+2. Connect live DPDK mbuf release to `PacketMemory` and remove compatibility materialization only with ownership tests.
+3. Profile multi-queue/RSS/NUMA-local workers on real hardware before introducing cross-core architecture.
+4. Complete RFC 6675 SACK recovery, PAWS, and remaining NewReno/CUBIC edge cases.
+5. Add blocking/writable-notification semantics and run interoperability matrices across Linux kernel versions.
 
 ## RFC references
 
