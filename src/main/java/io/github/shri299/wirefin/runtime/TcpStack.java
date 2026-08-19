@@ -8,6 +8,9 @@ import io.github.shri299.wirefin.socket.TcpListener;
 import io.github.shri299.wirefin.socket.TcpSocket;
 import io.github.shri299.wirefin.socket.UdpSocket;
 import io.github.shri299.wirefin.metrics.NetworkMetrics;
+import io.github.shri299.wirefin.tcp.connection.TcpConnectionSnapshot;
+import io.github.shri299.wirefin.trace.PacketCapture;
+import io.github.shri299.wirefin.trace.ProtocolTracer;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -25,8 +28,10 @@ public final class TcpStack implements AutoCloseable {
     private final PacketProcessor processor;
     private final ScheduledExecutorService timers = Executors.newSingleThreadScheduledExecutor();
     private final AtomicBoolean running = new AtomicBoolean();
-    private final NetworkMetrics metrics = new NetworkMetrics();
+    private final NetworkMetrics metrics;
     private final int batchSize;
+    private final PacketCapture capture;
+    private final ProtocolTracer tracer;
 
     public TcpStack(PacketDevice device, Ipv4Address localAddress) {
         this(device, java.util.List.of(localAddress));
@@ -37,12 +42,37 @@ public final class TcpStack implements AutoCloseable {
     }
 
     public TcpStack(PacketDevice device, java.util.Collection<? extends IpAddress> localAddresses, int batchSize) {
+        this(device, localAddresses, batchSize, PacketCapture.disabled());
+    }
+
+    public TcpStack(PacketDevice device, java.util.Collection<? extends IpAddress> localAddresses, int batchSize,
+                    PacketCapture capture) {
+        this(device,localAddresses,batchSize,capture,ProtocolTracer.disabled());
+    }
+
+    public TcpStack(PacketDevice device, java.util.Collection<? extends IpAddress> localAddresses, int batchSize,
+                    PacketCapture capture, ProtocolTracer tracer) {
+        this(device,localAddresses,batchSize,capture,tracer,false);
+    }
+
+    public TcpStack(PacketDevice device, java.util.Collection<? extends IpAddress> localAddresses, int batchSize,
+                    PacketCapture capture, ProtocolTracer tracer, boolean detailedProtocolMetrics) {
+        this(device,localAddresses,batchSize,capture,tracer,detailedProtocolMetrics,
+                io.github.shri299.wirefin.tcp.connection.TcpConnection.Config.defaults());
+    }
+
+    public TcpStack(PacketDevice device, java.util.Collection<? extends IpAddress> localAddresses, int batchSize,
+                    PacketCapture capture, ProtocolTracer tracer, boolean detailedProtocolMetrics,
+                    io.github.shri299.wirefin.tcp.connection.TcpConnection.Config connectionConfig) {
         if (batchSize < 1 || batchSize > 4096) throw new IllegalArgumentException("invalid batch size");
         this.device = device;
         this.batchSize = batchSize;
+        this.capture = java.util.Objects.requireNonNull(capture);
+        this.tracer = java.util.Objects.requireNonNull(tracer);
+        this.metrics = new NetworkMetrics(detailedProtocolMetrics);
         this.processor = new PacketProcessor(localAddresses,
                 () -> java.util.concurrent.ThreadLocalRandom.current().nextLong(1L << 32), this::writeUnchecked,
-                System::nanoTime, io.github.shri299.wirefin.tcp.connection.TcpConnection.Config.defaults(), metrics);
+                System::nanoTime, java.util.Objects.requireNonNull(connectionConfig), metrics,tracer);
     }
 
     public TcpListener listen(int port) { return new TcpListener(processor, port); }
@@ -82,6 +112,7 @@ public final class TcpStack implements AutoCloseable {
                 metrics.batch(received);
                 for (int i = 0; i < received; i++) {
                     byte[] packet = incoming.get(i); metrics.received(packet.length);
+                    if (capture.enabled()) capture.record(System.nanoTime(), PacketCapture.Direction.RX, packet);
                     for (byte[] response : processor.process(packet)) {
                         if (!outgoing.add(response)) { writeBatch(outgoing); outgoing.clear(); outgoing.add(response); }
                     }
@@ -98,22 +129,41 @@ public final class TcpStack implements AutoCloseable {
         catch (IOException e) { throw new UncheckedIOException(e); }
     }
 
-    private synchronized void writePacket(byte[] packet) throws IOException { device.write(packet); metrics.transmitted(packet.length); }
+    private synchronized void writePacket(byte[] packet) throws IOException {
+        device.write(packet);
+        metrics.transmitted(packet.length);
+        if (capture.enabled()) capture.record(System.nanoTime(), PacketCapture.Direction.TX, packet);
+    }
 
     private synchronized void writeBatch(PacketBatch batch) throws IOException {
         int accepted = device.transmit(batch);
         if (accepted < 0 || accepted > batch.size()) throw new IOException("invalid device transmit count");
-        for (int i = 0; i < accepted; i++) metrics.transmitted(batch.get(i).length);
+        for (int i = 0; i < accepted; i++) {
+            byte[] packet = batch.get(i);
+            metrics.transmitted(packet.length);
+            if (capture.enabled()) capture.record(System.nanoTime(), PacketCapture.Direction.TX, packet);
+        }
         for (int i = accepted; i < batch.size(); i++) metrics.drop();
     }
 
     public NetworkMetrics.Snapshot metrics() { return metrics.snapshot(); }
+    /** Educational equivalent of a small, read-only subset of {@code ss -ti}. */
+    public java.util.List<TcpConnectionSnapshot> connections() { return processor.connectionSnapshots(); }
 
     @Override public void close() throws IOException {
         running.set(false);
         timers.shutdownNow();
-        device.close();
+        IOException failure = null;
+        try { device.close(); } catch (IOException closeFailure) { failure = closeFailure; }
+        try { capture.close(); } catch (IOException closeFailure) {
+            if (failure == null) failure = closeFailure; else failure.addSuppressed(closeFailure);
+        }
+        try { tracer.close(); } catch (RuntimeException closeFailure) {
+            if (failure == null) failure = new IOException("protocol trace close failed",closeFailure);
+            else failure.addSuppressed(closeFailure);
+        }
         try { timers.awaitTermination(2, TimeUnit.SECONDS); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        if (failure != null) throw failure;
     }
 }

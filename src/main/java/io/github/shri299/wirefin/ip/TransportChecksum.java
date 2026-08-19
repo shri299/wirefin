@@ -1,6 +1,7 @@
 package io.github.shri299.wirefin.ip;
 
 import io.github.shri299.wirefin.ipv4.InternetChecksum;
+import io.github.shri299.wirefin.view.OwnedPacketView;
 import java.nio.ByteBuffer;
 
 /** IPv4/IPv6 pseudo-header checksum used by TCP, UDP, and ICMPv6. */
@@ -25,6 +26,17 @@ public final class TransportChecksum {
         if (source.bitLength() == 32) { if (length > 0xffff) throw new IllegalArgumentException("transport payload too long"); sum += protocol + length; }
         else sum += (length >>> 16) + (length & 0xffff) + protocol;
         return InternetChecksum.compute(payload, offset, length, sum);
+    }
+
+    public static int compute(OwnedPacketView payload, int length, IpAddress source, IpAddress destination, int protocol) {
+        if (source.bitLength() != destination.bitLength()) throw new IllegalArgumentException("mixed IP families");
+        if (length < 0 || length > payload.length()) throw new IndexOutOfBoundsException("invalid payload length");
+        long sum = addressSum(source) + addressSum(destination);
+        if (source.bitLength() == 32) {
+            if (length > 0xffff) throw new IllegalArgumentException("transport payload too long");
+            sum += protocol + length;
+        } else sum += (length >>> 16) + (length & 0xffff) + protocol;
+        return payload.internetChecksum(0, length, sum);
     }
 
     private static long addressSum(IpAddress address) {

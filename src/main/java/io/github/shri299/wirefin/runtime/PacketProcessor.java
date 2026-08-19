@@ -20,6 +20,8 @@ import io.github.shri299.wirefin.tcp.TcpSegment;
 import io.github.shri299.wirefin.tcp.connection.TcpConnection;
 import io.github.shri299.wirefin.tcp.connection.TcpConnectionKey;
 import io.github.shri299.wirefin.tcp.connection.TcpConnectionTable;
+import io.github.shri299.wirefin.tcp.connection.TcpConnectionSnapshot;
+import io.github.shri299.wirefin.trace.*;
 import io.github.shri299.wirefin.tcp.reliability.SequenceNumber;
 import io.github.shri299.wirefin.tcp.state.TcpState;
 import io.github.shri299.wirefin.udp.UdpCodec;
@@ -57,6 +59,7 @@ public final class PacketProcessor {
     private final TcpConnection.Config connectionConfig;
     private final long cookieSecret;
     private final NetworkMetrics metrics;
+    private final ProtocolTracer tracer;
 
     public PacketProcessor(Ipv4Address localAddress) {
         this(localAddress, () -> ThreadLocalRandom.current().nextLong(1L << 32), ignored -> { });
@@ -77,6 +80,11 @@ public final class PacketProcessor {
     public PacketProcessor(Collection<? extends IpAddress> localAddresses, LongSupplier isnSource,
                            Consumer<byte[]> asynchronousOutput, LongSupplier nanoTime,
                            TcpConnection.Config connectionConfig, NetworkMetrics metrics) {
+        this(localAddresses,isnSource,asynchronousOutput,nanoTime,connectionConfig,metrics,ProtocolTracer.disabled());
+    }
+    public PacketProcessor(Collection<? extends IpAddress> localAddresses, LongSupplier isnSource,
+                           Consumer<byte[]> asynchronousOutput, LongSupplier nanoTime,
+                           TcpConnection.Config connectionConfig, NetworkMetrics metrics, ProtocolTracer tracer) {
         if (localAddresses == null || localAddresses.isEmpty()) throw new IllegalArgumentException("local address required");
         var map = new java.util.HashMap<Integer, IpAddress>();
         for (IpAddress address : localAddresses) {
@@ -86,6 +94,7 @@ public final class PacketProcessor {
         this.localAddresses = Map.copyOf(map); this.isnSource = isnSource; this.asynchronousOutput = asynchronousOutput;
         this.nanoTime = nanoTime; this.connectionConfig = connectionConfig;
         this.metrics = java.util.Objects.requireNonNull(metrics);
+        this.tracer = java.util.Objects.requireNonNull(tracer);
         this.cookieSecret = ThreadLocalRandom.current().nextLong();
         dispatcher.register(6, this::processTcp);
         dispatcher.register(17, this::processUdp);
@@ -110,8 +119,10 @@ public final class PacketProcessor {
             int port = 49_152 + Math.floorMod(nextEphemeralPort.getAndIncrement() - 49_152, 16_384);
             TcpConnectionKey key = new TcpConnectionKey(localAddress, port, remoteAddress, remotePort);
             if (connections.find(key).isPresent()) continue;
-            TcpConnection connection = connections.add(TcpConnection.activeOpen(
-                    key, isnSource.getAsLong(), nanoTime.getAsLong(), connectionConfig));
+            TcpConnection connection;
+            try { connection = connections.add(TcpConnection.activeOpen(
+                    key, isnSource.getAsLong(), nanoTime.getAsLong(), connectionConfig)); }
+            catch (TcpConnectionTable.CapacityExceededException full) { metrics.resourceRejected(); throw full; }
             transmit(connection, List.of(connection.syn()));
             return connection;
         }
@@ -126,8 +137,14 @@ public final class PacketProcessor {
                 Ipv4Packet parsed = Ipv4Codec.parse(rawPacket);
                 IpAddress local = localAddresses.get(32);
                 if (!parsed.destination().equals(local)) return List.of();
+                boolean fragmented=parsed.isFragmented();
+                long expiredBefore=fragmented&&metrics.detailedProtocolMetrics()?fragments.expiredDatagrams():0;
+                if (fragmented) metrics.fragmentReceived();
                 var complete = fragments.accept(parsed, nanoTime.getAsLong());
+                if(fragmented&&metrics.detailedProtocolMetrics())
+                    metrics.fragmentTimeouts(fragments.expiredDatagrams()-expiredBefore);
                 if (complete.isEmpty()) return List.of();
+                if (fragmented) metrics.fragmentAssembled();
                 Ipv4Packet ip = complete.get();
                 return dispatcher.dispatch(ip.protocol(), ip.source(), ip.destination(), ip.payload(), Ipv4Codec.serialize(ip));
             }
@@ -140,6 +157,9 @@ public final class PacketProcessor {
             return List.of();
         } catch (IllegalArgumentException malformed) {
             metrics.drop();
+            metrics.malformedPacket();
+            if (malformed.getMessage() != null && malformed.getMessage().toLowerCase(java.util.Locale.ROOT).contains("checksum"))
+                metrics.checksumFailure();
             LOG.fine(() -> "Dropping malformed packet: " + malformed.getMessage()); return List.of();
         }
     }
@@ -155,39 +175,69 @@ public final class PacketProcessor {
         if (connection == null) {
             if (listener != null && tcp.has(TcpFlags.SYN) && !tcp.has(TcpFlags.ACK)) {
                 if (listener.reserveHalfOpen(key)) {
-                    connection = connections.add(TcpConnection.passiveOpen(key, isnSource.getAsLong(), tcp,
-                            nanoTime.getAsLong(), connectionConfig));
-                    replies.add(connection.synAck());
+                    try {
+                        connection = connections.add(TcpConnection.passiveOpen(key, isnSource.getAsLong(), tcp,
+                                nanoTime.getAsLong(), connectionConfig));
+                        replies.add(connection.synAck());
+                    } catch (TcpConnectionTable.CapacityExceededException full) {
+                        listener.remove(key);
+                        metrics.resourceRejected();
+                        metrics.drop();
+                    }
                 } else if (listener.synCookies) replies.add(cookieSynAck(key, tcp));
             } else if (listener != null && listener.synCookies && tcp.has(TcpFlags.ACK) && validCookie(key, tcp)) {
                 TcpSegment syntheticSyn = new TcpSegment(tcp.sourcePort(), tcp.destinationPort(),
                         SequenceNumber.add(tcp.sequenceNumber(), -1), 0, TcpFlags.SYN, tcp.windowSize(), 0,
                         new byte[0], new byte[0]);
                 long cookie = SequenceNumber.add(tcp.acknowledgementNumber(), -1);
-                connection = connections.add(TcpConnection.passiveOpen(key, cookie, syntheticSyn,
-                        nanoTime.getAsLong(), connectionConfig));
-                TcpConnection.ProcessingResult result = connection.receive(tcp, nanoTime.getAsLong());
-                recordMetrics(connection);
-                replies.addAll(result.outbound());
-                if (result.justEstablished() && !listener.promoteCookie(connection)) {
-                    connections.remove(key);
-                    replies.clear();
-                    replies.add(resetFor(tcp));
+                try {
+                    connection = connections.add(TcpConnection.passiveOpen(key, cookie, syntheticSyn,
+                            nanoTime.getAsLong(), connectionConfig));
+                    TcpConnection.ProcessingResult result = connection.receive(tcp, nanoTime.getAsLong());
+                    recordMetrics(connection);
+                    replies.addAll(result.outbound());
+                    if (result.justEstablished()) {
+                        if (!listener.promoteCookie(connection)) {
+                            connections.remove(key);
+                            replies.clear();
+                            replies.add(resetFor(tcp));
+                        } else metrics.connectionOpened();
+                    }
+                } catch (TcpConnectionTable.CapacityExceededException full) {
+                    metrics.resourceRejected();
+                    metrics.drop();
                 }
             } else if (!tcp.has(TcpFlags.RST)) replies.add(resetFor(tcp));
         } else {
             TcpConnection.ProcessingResult result = connection.receive(tcp, nanoTime.getAsLong());
             recordMetrics(connection);
             replies.addAll(result.outbound());
-            if (result.justEstablished() && listener != null && !listener.promote(key, connection)) {
-                connections.remove(key);
-                replies.clear();
-                replies.add(resetFor(tcp));
+            if (result.justEstablished()) {
+                if (listener != null && !listener.promote(key, connection)) {
+                    connections.remove(key);
+                    replies.clear();
+                    replies.add(resetFor(tcp));
+                } else metrics.connectionOpened();
             }
-            if (result.closed()) { connections.remove(key); if (listener != null) listener.remove(key); }
+            if (result.closed()) {
+                metrics.connectionClosed();
+                if (tcp.has(TcpFlags.RST)) metrics.connectionReset();
+                connections.remove(key);
+                if (listener != null) listener.remove(key);
+            }
         }
         TcpConnectionKey responseKey = key;
+        if (tracer.enabled() && connection != null) {
+            trace(connection, tcp, PacketCapture.Direction.RX);
+            for (TcpSegment reply : replies) trace(connection, reply, PacketCapture.Direction.TX);
+        }
         return replies.stream().map(reply -> encode(reply, responseKey)).toList();
+    }
+
+    private void trace(TcpConnection connection, TcpSegment segment, PacketCapture.Direction direction) {
+        tracer.onSegment(new ProtocolTracer.TcpSegmentTrace(nanoTime.getAsLong(), direction, segment.flags(),
+                segment.sequenceNumber(), segment.acknowledgementNumber(), segment.payload().length,
+                connection.snapshot()));
     }
 
     private TcpSegment cookieSynAck(TcpConnectionKey key, TcpSegment syn) {
@@ -217,6 +267,7 @@ public final class PacketProcessor {
     }
 
     private List<byte[]> processUdp(IpAddress source, IpAddress destination, byte[] payload, byte[] originalPacket) {
+        metrics.udpDatagram();
         UdpDatagram datagram = UdpCodec.parse(payload, source, destination);
         Predicate<UdpReceivedDatagram> binding = udpBindings.get(datagram.destinationPort());
         if (binding != null) {
@@ -236,6 +287,7 @@ public final class PacketProcessor {
     }
 
     private List<byte[]> processIcmpV4(IpAddress source, IpAddress destination, byte[] payload, byte[] originalPacket) {
+        metrics.icmpMessage();
         IcmpMessage request = IcmpCodec.parseV4(payload);
         if (request.type() != 8 || request.code() != 0) return List.of();
         return List.of(encodeIp(destination, source, 1,
@@ -243,6 +295,7 @@ public final class PacketProcessor {
     }
 
     private List<byte[]> processIcmpV6(IpAddress source, IpAddress destination, byte[] payload, byte[] originalPacket) {
+        metrics.icmpMessage();
         IcmpMessage request = IcmpCodec.parseV6(payload, source, destination);
         if (request.type() != 128 || request.code() != 0) return List.of();
         IcmpMessage reply = new IcmpMessage(129, 0, request.restOfHeader(), request.payload());
@@ -286,7 +339,10 @@ public final class PacketProcessor {
     public TcpConnectionTable connections() { return connections; }
     public void cancel(TcpConnection connection) { connections.remove(connection.key()); }
     public void transmit(TcpConnection connection, List<TcpSegment> segments) {
-        for (TcpSegment segment : segments) asynchronousOutput.accept(encode(segment, connection.key()));
+        for (TcpSegment segment : segments) {
+            if (tracer.enabled()) trace(connection,segment,PacketCapture.Direction.TX);
+            asynchronousOutput.accept(encode(segment, connection.key()));
+        }
     }
     public void pollRetransmissions(long nowNanos) {
         for (TcpConnection connection : connections.snapshot()) {
@@ -294,6 +350,7 @@ public final class PacketProcessor {
             recordMetrics(connection);
             transmit(connection, due);
             if (connection.expireTimeWait(nowNanos) || connection.state() == TcpState.CLOSED) {
+                metrics.connectionClosed();
                 connections.remove(connection.key());
                 ListenerState listener = listeners.get(connection.key().localPort());
                 if (listener != null) listener.remove(connection.key());
@@ -306,6 +363,8 @@ public final class PacketProcessor {
         metrics.retransmissions(deltas.retransmissions());
         metrics.fastRetransmits(deltas.fastRetransmits());
         metrics.rtoEvents(deltas.rtoEvents());
+        metrics.sackEvents(deltas.sackEvents());
+        metrics.zeroWindowEvents(deltas.zeroWindowEvents());
     }
     public void accepted(TcpConnectionKey key) {
         ListenerState listener = listeners.get(key.localPort());
@@ -313,6 +372,10 @@ public final class PacketProcessor {
     }
     public int halfOpenCount(int port) { ListenerState listener = listeners.get(port); return listener == null ? 0 : listener.halfOpenCount(); }
     public int establishedBacklogCount(int port) { ListenerState listener = listeners.get(port); return listener == null ? 0 : listener.establishedCount(); }
+    public List<TcpConnectionSnapshot> connectionSnapshots() {
+        return connections.snapshot().stream().map(TcpConnection::snapshot)
+                .sorted(java.util.Comparator.comparingLong(TcpConnectionSnapshot::id)).toList();
+    }
 
     private static final class ListenerState {
         private final int backlog;

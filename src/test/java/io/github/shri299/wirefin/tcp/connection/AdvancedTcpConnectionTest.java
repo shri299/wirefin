@@ -62,7 +62,7 @@ class AdvancedTcpConnectionTest {
         assertTrue(connection.retransmissionsDue(10).isEmpty());
         TcpSegment probe = connection.retransmissionsDue(11).getFirst();
         assertArrayEquals(bytes("q"), probe.payload());
-        assertEquals(new TcpConnection.MetricDeltas(0, 0, 0), connection.consumeMetricDeltas());
+        assertEquals(new TcpConnection.MetricDeltas(0, 0, 0, 0, 0), connection.consumeMetricDeltas());
         assertEquals(6, connection.pendingSendBytes());
         List<TcpSegment> resumed = connection.receive(segment(501, 10_001, TcpFlags.ACK, 32,
                 new byte[0], new byte[0]), 12).outbound();

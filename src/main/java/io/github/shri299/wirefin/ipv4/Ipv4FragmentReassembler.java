@@ -8,6 +8,7 @@ public final class Ipv4FragmentReassembler {
     private final long timeoutNanos;
     private final LinkedHashMap<Key, Assembly> assemblies = new LinkedHashMap<>();
     private int retainedBytes;
+    private long expiredDatagrams;
     public Ipv4FragmentReassembler() { this(64, 1 << 20, 30_000_000_000L); }
     public Ipv4FragmentReassembler(int maxDatagrams, int maxBytes, long timeoutNanos) {
         if (maxDatagrams < 1 || maxBytes < 1 || timeoutNanos < 1) throw new IllegalArgumentException("invalid reassembly bounds");
@@ -39,13 +40,18 @@ public final class Ipv4FragmentReassembler {
         return Optional.of(new Ipv4Packet(first.dscpEcn(), first.identification(), first.flags() & 2, 0,
                 first.ttl(), first.protocol(), first.source(), first.destination(), first.options(), joined));
     }
-    public synchronized void expire(long now) {
+    public synchronized int expire(long now) {
+        int expired = 0;
         var iterator = assemblies.entrySet().iterator();
         while (iterator.hasNext()) { var entry = iterator.next(); if (now - entry.getValue().updated >= timeoutNanos) {
-            retainedBytes -= entry.getValue().bytes(); iterator.remove();
+            retainedBytes -= entry.getValue().bytes(); iterator.remove(); expired++;
         }}
+        expiredDatagrams += expired;
+        return expired;
     }
     public synchronized int pendingDatagrams() { return assemblies.size(); }
+    public synchronized int retainedBytes() { return retainedBytes; }
+    public synchronized long expiredDatagrams() { return expiredDatagrams; }
     private void enforceBounds() {
         while (assemblies.size() > maxDatagrams || retainedBytes > maxBytes) {
             var oldest = assemblies.entrySet().iterator().next(); remove(oldest.getKey(), oldest.getValue());

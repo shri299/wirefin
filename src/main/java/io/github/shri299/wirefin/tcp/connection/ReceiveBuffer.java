@@ -27,14 +27,17 @@ final class ReceiveBuffer {
 
     synchronized int accept(long sequence, byte[] payload) {
         int before = readableBytes;
-        int window = advertisedWindow();
+        // RCV.NXT advances when contiguous bytes enter the unread ring. Those
+        // bytes consume storage but must not make already-advertised holes
+        // impossible to fill. Pending bytes are bounded separately below.
+        int maximumOffset = capacity - readableBytes;
         for (int i = 0; i < payload.length; i++) {
             long byteSequence = SequenceNumber.add(sequence, i);
             long distance = SequenceNumber.distance(receiveNext, byteSequence);
             if (distance > Integer.MAX_VALUE) continue; // already cumulatively received
             int offset = (int) distance;
             if (pending.containsKey(offset)) continue;
-            if (offset >= window || totalBuffered() >= capacity) continue;
+            if (offset >= maximumOffset || totalBuffered() >= capacity) continue;
             pending.put(offset, payload[i]);
         }
         drainContiguous();

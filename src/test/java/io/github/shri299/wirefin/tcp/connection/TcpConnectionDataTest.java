@@ -37,8 +37,8 @@ class TcpConnectionDataTest {
         for (int i = 1; i < 3; i++) assertTrue(connection.receive(segment(501, 10_001, TcpFlags.ACK, new byte[0], 1000), 20 + i).outbound().isEmpty());
         assertEquals(sent.sequenceNumber(), connection.receive(segment(501, 10_001, TcpFlags.ACK, new byte[0], 1000), 23)
                 .outbound().getFirst().sequenceNumber());
-        assertEquals(new TcpConnection.MetricDeltas(1, 1, 0), connection.consumeMetricDeltas());
-        assertEquals(new TcpConnection.MetricDeltas(0, 0, 0), connection.consumeMetricDeltas());
+        assertEquals(new TcpConnection.MetricDeltas(1, 1, 0, 0, 0), connection.consumeMetricDeltas());
+        assertEquals(new TcpConnection.MetricDeltas(0, 0, 0, 0, 0), connection.consumeMetricDeltas());
     }
 
     @Test void duplicateSynRetransmitsSynAckAndInvalidHandshakeAckResets() {
@@ -129,7 +129,7 @@ class TcpConnectionDataTest {
         TcpSegment retransmitted = connection.retransmissionsDue(deadline).getFirst();
         assertEquals(fin.sequenceNumber(), retransmitted.sequenceNumber());
         assertTrue(retransmitted.has(TcpFlags.FIN));
-        assertEquals(new TcpConnection.MetricDeltas(1, 0, 1), connection.consumeMetricDeltas());
+        assertEquals(new TcpConnection.MetricDeltas(1, 0, 1, 0, 0), connection.consumeMetricDeltas());
     }
 
     @Test void pendingSendBufferAppliesConnectionBackpressure() {
@@ -142,6 +142,17 @@ class TcpConnectionDataTest {
         connection.receive(segment(501,10_001,TcpFlags.ACK,new byte[0],0),1);
         connection.send(bytes("12345678"),2); assertEquals(8,connection.pendingSendBytes());
         assertThrows(IllegalStateException.class,()->connection.send(bytes("9"),3));
+    }
+
+    @Test void exposesImmutableControlBlockDiagnostics() {
+        TcpConnection connection=established(32,16,1000);
+        connection.send(bytes("abc"),10);
+        connection.receive(segment(501,10_004,TcpFlags.ACK,bytes("xy"),1000),20);
+        TcpConnectionSnapshot snapshot=connection.snapshot();
+        assertTrue(snapshot.id()>0);assertEquals(KEY,snapshot.key());assertEquals(TcpState.ESTABLISHED,snapshot.state());
+        assertEquals(3,snapshot.bytesSent());assertEquals(2,snapshot.bytesReceived());assertEquals(0,snapshot.bytesInFlight());
+        assertTrue(snapshot.smoothedRttNanos()>0);assertEquals(connection.rtoNanos(),snapshot.rtoNanos());
+        assertEquals(503,snapshot.receiveNext());assertEquals(10_004,snapshot.sendUnacknowledged());
     }
 
     private static TcpConnection established(int capacity, Integer mss, int window) {

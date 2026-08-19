@@ -19,4 +19,19 @@ class SequenceNumberTest {
             if (i > 0) assertTrue(SequenceNumber.lessThan(base, later));
         }
     }
+
+    @Test void generatedOrderingRemainsConsistentWithinTheUnambiguousHalfSpace() {
+        var random = new java.util.Random(0x53455155454e4345L);
+        for (int example = 0; example < 100_000; example++) {
+            long base = Integer.toUnsignedLong(random.nextInt());
+            int delta = random.nextInt(Integer.MAX_VALUE);
+            long later = SequenceNumber.add(base, delta);
+            assertEquals(delta, SequenceNumber.distance(base, later));
+            if (delta == 0) assertFalse(SequenceNumber.lessThan(base, later));
+            else {
+                assertTrue(SequenceNumber.lessThan(base, later));
+                assertTrue(SequenceNumber.greaterThan(later, base));
+            }
+        }
+    }
 }
